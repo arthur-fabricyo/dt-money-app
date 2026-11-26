@@ -12,14 +12,17 @@ Abra esta pasta no Android Studio com JDK 17 ou superior e Android SDK 36. O app
 
 O APK fica em `app/build/outputs/apk/debug/app-debug.apk`. O backend legado escuta na porta 3001. No emulador, use `http://10.0.2.2:3001`. Em um aparelho conectado por USB, rode `adb reverse tcp:3001 tcp:3001` e use `http://127.0.0.1:3001`. A versão de produção exige uma URL HTTPS.
 
-## Importar compras
+## Lançamentos automáticos no APK de desenvolvimento
 
-1. Entre com sua conta e abra **Capturas**.
-2. Informe o identificador de pacote do aplicativo bancário e salve. Em **Configurações do Android**, conceda acesso às notificações ao DT Money.
-3. Gere um alerta do banco, volte ao DT Money e toque em **Atualizar capturas**. Abra a compra para revisar a descrição e o valor, escolher uma categoria e salvar como saída.
+1. Antes de iniciar a API, aplique a migration de importações a partir de `DT-money-backend` com `npx typeorm-ts-node-commonjs migration:run -d src/infra/database/typeorm/dt-money/data-source.ts`. Ela adiciona unicidade por usuário e a categoria **Sem categoria**.
+2. Entre no app e abra **Capturas**. Em **Configurações do Android**, conceda acesso a notificações ao DT Money. Ative Nubank e Santander individualmente.
+3. Para usar FunctionGemma 270M, toque em **Instalar FunctionGemma local** e selecione um modelo `.litertlm` que tenha suporte a chamadas de função. O binário fica no aparelho. A documentação do Google descreve a preparação e a exportação do modelo. [FunctionGemma e LiteRT-LM](https://ai.google.dev/gemma/docs/mobile-actions)
+4. Abra **Transações** para ver os lançamentos. Use **Alterar categoria** para corrigir uma sugestão ou categorizar manualmente um item.
 
-A regra inicial reconhece textos como `Compra aprovada de R$ 42,90 em Mercado X` ou `Compra aprovada: R$ 42,90 em Mercado X`. Cada banco pode usar formatos diferentes. O serviço filtra pelo pacote indicado e guarda somente os campos extraídos, na fila SQLite da conta e da API em uso.
+Alertas reconhecidos vão para o SQLite mesmo sem rede. Pix recebido é entrada. Pix enviado, crédito e débito aprovados são saídas. Uma compra aprovada que omite o meio mantém o meio desconhecido. Em aparelhos compatíveis com Gemini Nano já disponível, o app pode categorizar em primeiro plano quando o FunctionGemma estiver indisponível. O saldo é parcial quando só há dados locais ou quando a API ainda não confirmou o estado de um envio.
 
-A fila exibe o horário da notificação. O backend legado registra a data de criação da saída ao salvar. Quando um envio fica sem confirmação, confira o histórico e escolha **Arquivar** ou **Voltar para revisão**.
+Os pacotes de origem são os aplicativos brasileiros oficiais do [Nubank](https://play.google.com/store/apps/details?id=com.nu.production&hl=pt_BR) e do [Santander](https://play.google.com/store/apps/details?id=com.santander.app&hl=pt_BR). Os formatos de alerta foram exercitados com exemplos sintéticos. A validação do texto real, da compatibilidade e do desempenho da IA em segundo plano determina a habilitação no APK de produção.
 
-O contrato para data da compra, importação idempotente e registro automático está no [KB do DT Money](https://chatgpt.com/space/page_6d4769017c088191ae81349352e7358d).
+## Revisar capturas anteriores
+
+O campo **Pacote para revisão manual** mantém o fluxo legado de compras. Capta alertas como `Compra aprovada de R$ 42,90 em Mercado X` e deixa a compra em **Capturas** para confirmação. A versão anterior da fila, inclusive envios de resultado incerto, continua disponível para revisão.

@@ -4,6 +4,7 @@ import java.io.IOException
 import java.math.BigDecimal
 import java.math.RoundingMode
 import java.time.Instant
+import java.util.Locale
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.HttpUrl.Companion.toHttpUrl
@@ -26,7 +27,11 @@ internal data class Transaction(
     val id: Long,
     val input: TransactionInput,
     val category: String,
-    val createdAt: String
+    val createdAt: String,
+    val importId: String? = null,
+    val occurredAt: String? = null,
+    val pending: Boolean = false,
+    val syncRejected: Boolean = false
 )
 internal data class Filters(
     val search: String = "",
@@ -41,7 +46,12 @@ internal data class TransactionPage(
     val totalPages: Int,
     val revenue: Long,
     val expense: Long,
-    val balance: Long
+    val balance: Long,
+    val latestTransactionId: Long? = null,
+    val foundImportIds: Set<String> = emptySet(),
+    val probedImportIds: Set<String> = emptySet(),
+    val unsentAtSnapshot: Set<String> = emptySet(),
+    val partial: Boolean = false
 )
 
 internal class ApiError(val status: Int) : IOException("HTTP $status")
@@ -66,14 +76,15 @@ internal class MoneyApi(baseUrl: String, private val token: String? = null) {
         }
     }
 
-    suspend fun transactions(page: Int, filters: Filters): TransactionPage {
+    suspend fun transactions(page: Int, filters: Filters, probeImportIds: Set<String> = emptySet()): TransactionPage {
         val result = JSONObject(request("transaction", query = {
             addQueryParameter("page", page.toString())
             addQueryParameter("perPage", "15")
+            addQueryParameter("dateBasis", "movement")
+            probeImportIds.forEach { addQueryParameter("probeImportIds", it) }
             filters.search.trim().takeIf(String::isNotEmpty)?.let { addQueryParameter("searchText", it) }
             filters.typeId?.let { addQueryParameter("typeId", it.toString()) }
             filters.categoryIds.forEach { addQueryParameter("categoryIds", it.toString()) }
-            // The legacy API applies both end-date comparisons when no start date is supplied.
             val start = filters.from ?: filters.to?.let { Instant.EPOCH.toString() }
             start?.let { addQueryParameter("from", it) }
             filters.to?.let { addQueryParameter("to", it) }
@@ -90,16 +101,58 @@ internal class MoneyApi(baseUrl: String, private val token: String? = null) {
                         row.getInt("categoryId"), row.getInt("typeId")
                     ),
                     row.optJSONObject("category")?.optString("name").orEmpty(),
-                    row.optString("createdAt")
+                    row.optString("createdAt"),
+                    row.optionalString("importId"),
+                    row.optionalString("occurredAt")
                 )
             },
             page = result.getInt("page"),
             totalPages = result.getInt("totalPages"),
             revenue = totals.cents("revenue"),
             expense = totals.cents("expense"),
-            balance = totals.cents("total")
+            balance = totals.cents("total"),
+            latestTransactionId = if (result.has("latestTransactionId")) result.getLong("latestTransactionId") else null,
+            foundImportIds = result.optJSONArray("foundImportIds")?.let { ids ->
+                List(ids.length()) { ids.getString(it) }.toSet()
+            }.orEmpty(),
+            probedImportIds = probeImportIds
         )
     }
+
+    suspend fun createImport(entry: LocalImport, uncategorizedId: Int): ImportReceipt {
+        val movement = entry.movement
+        val body = JSONObject()
+            .put("description", movement.description)
+            .put("value", BigDecimal.valueOf(movement.cents, 2))
+            .put("categoryId", uncategorizedId)
+            .put("typeId", movement.direction.typeId)
+            .put("importId", movement.importId)
+            .put("occurredAt", movement.occurredAt.toString())
+            .put("bank", movement.bank.name.lowercase(Locale.ROOT))
+            .put("method", movement.method.name.lowercase(Locale.ROOT))
+            .put("dateSource", movement.dateSource.name.lowercase(Locale.ROOT))
+        return JSONObject(request("transaction", "POST", body)).receipt(movement.importId)
+    }
+
+    suspend fun updateImportCategory(importId: String, categoryId: Int, source: CategorySource): ImportReceipt {
+        val body = JSONObject()
+            .put("categoryId", categoryId)
+            .put("source", source.name.lowercase(Locale.ROOT))
+        return JSONObject(request("transaction/imports/$importId/category", "PATCH", body)).receipt(importId)
+    }
+
+    private fun JSONObject.receipt(expectedImportId: String): ImportReceipt {
+        if (optionalString("importId") != expectedImportId) throw IOException("Resposta de importação inválida.")
+        val source = when (optionalString("categorySource")) {
+            "manual" -> CategorySource.MANUAL
+            "model" -> CategorySource.MODEL
+            else -> CategorySource.UNSET
+        }
+        return ImportReceipt(getLong("id"), expectedImportId, getInt("categoryId"), source, !isNull("deletedAt"))
+    }
+
+    private fun JSONObject.optionalString(field: String): String? =
+        if (isNull(field)) null else getString(field)
 
     suspend fun save(input: TransactionInput, id: Long?) {
         val body = JSONObject()

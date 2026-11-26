@@ -1,18 +1,22 @@
 package com.elfabrica.dtmoney
 
 import android.app.Application
+import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import java.io.IOException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
+import kotlinx.coroutines.sync.withLock
 
 internal data class AppState(
     val baseUrl: String,
@@ -23,16 +27,37 @@ internal data class AppState(
     val filters: Filters = Filters(),
     val transactions: TransactionPage? = null,
     val drafts: List<PurchaseDraft> = emptyList(),
-    val bankPackage: String = ""
+    val bankPackage: String = "",
+    val enabledBanks: Set<Bank> = emptySet(),
+    val functionGemmaInstalled: Boolean = false
 )
 
 internal class MoneyViewModel(application: Application) : AndroidViewModel(application) {
     private val settings = AppSettings(application)
+    private val context = application
     private val store = ImportStore.get(application)
     private val mutableState = MutableStateFlow(AppState(settings.baseUrl, settings.loadSession()))
     val state = mutableState.asStateFlow()
+    private val snapshots = mutableMapOf<Filters, TransactionPage>()
 
     init {
+        viewModelScope.launch {
+            store.changes.collect {
+                val session = state.value.session ?: return@collect
+                showLocalDashboard(session)
+            }
+        }
+        viewModelScope.launch {
+            store.receipts.collectLatest {
+                delay(350)
+                val session = state.value.session ?: return@collectLatest
+                try {
+                    loadSnapshot(session, 1)
+                } catch (_: IOException) {
+                    // The last complete snapshot and local rows remain visible.
+                }
+            }
+        }
         if (state.value.session != null) refresh()
     }
 
@@ -47,7 +72,9 @@ internal class MoneyViewModel(application: Application) : AndroidViewModel(appli
         val baseUrl = url.toString().trimEnd('/')
         val session = MoneyApi(baseUrl).authenticate(email.trim(), password, name?.trim())
         settings.saveSession(baseUrl, session)
+        snapshots.clear()
         mutableState.value = AppState(baseUrl, session, busy = true)
+        BankImportWorker.schedule(context, settings.scope(session))
         loadDrafts(session)
         loadDashboard(session, 1)
     }
@@ -58,24 +85,67 @@ internal class MoneyViewModel(application: Application) : AndroidViewModel(appli
 
     fun refresh() = perform {
         val session = state.value.session ?: return@perform
+        BankImportWorker.schedule(context, settings.scope(session))
         loadDrafts(session)
         loadDashboard(session, 1)
     }
 
     fun filter(filters: Filters) = perform {
         val session = state.value.session ?: return@perform
-        val page = api(session).transactions(1, filters)
-        mutableState.update { it.copy(filters = filters, transactions = page) }
+        mutableState.update { it.copy(filters = filters) }
+        showLocalDashboard(session)
+        loadSnapshot(session, 1)
     }
 
     fun loadMore() = perform {
         val current = state.value
-        val previous = current.transactions ?: return@perform
+        val previous = snapshots[current.filters] ?: return@perform
         val session = current.session ?: return@perform
         if (previous.page >= previous.totalPages) return@perform
-        val page = api(session).transactions(previous.page + 1, current.filters)
-        val combined = (previous.items + page.items).distinctBy { it.id }
-        mutableState.update { it.copy(transactions = page.copy(items = combined)) }
+        loadSnapshot(session, previous.page + 1)
+    }
+
+    fun setBankEnabled(bank: Bank, enabled: Boolean) = perform {
+        val session = state.value.session ?: return@perform
+        settings.setBankEnabled(settings.scope(session), bank, enabled)
+        loadDrafts(session)
+    }
+
+    fun installFunctionGemma(uri: Uri) = perform {
+        val session = state.value.session ?: return@perform
+        withContext(Dispatchers.IO) { FunctionGemmaClassifier.install(context, uri) }
+        loadDrafts(session)
+        BankCategoryWorker.schedule(context, settings.scope(session))
+        message("Modelo local instalado.")
+    }
+
+    suspend fun classifyInForeground() {
+        val session = state.value.session ?: return
+        val scope = settings.scope(session)
+        val gemma = FunctionGemmaClassifier(context)
+        val nano = GeminiNanoClassifier()
+        val primaryThenFallback = BankCategoryClassifier { transaction, categories ->
+            val suggestion = gemma.suggest(transaction, categories)
+            if (suggestion == CategorySuggestion.Unavailable) nano.suggest(transaction, categories) else suggestion
+        }
+        if (classifyPending(context, scope, primaryThenFallback)) {
+            BankImportWorker.schedule(context, scope)
+        }
+    }
+
+    fun saveImportCategory(row: Transaction, categoryId: Int, close: () -> Unit) = perform {
+        val session = state.value.session ?: return@perform
+        val scope = settings.scope(session)
+        val importId = row.importId ?: return@perform
+        val stored = withContext(Dispatchers.IO) { store.setManualCategory(scope, importId, categoryId) }
+        if (stored) {
+            BankImportWorker.schedule(context, scope)
+            showLocalDashboard(session)
+        } else {
+            bankImportSync.withLock { api(session).updateImportCategory(importId, categoryId, CategorySource.MANUAL) }
+            refreshAfterWrite(session)
+        }
+        close()
     }
 
     fun saveBank(packageName: String) = perform {
@@ -151,14 +221,14 @@ internal class MoneyViewModel(application: Application) : AndroidViewModel(appli
     fun delete(id: Long) = perform {
         val session = state.value.session ?: return@perform
         api(session).delete(id)
+        withContext(Dispatchers.IO) { store.markDeleted(settings.scope(session), id) }
         message("Transação excluída.")
         refreshAfterWrite(session)
     }
 
     private suspend fun refreshAfterWrite(session: Session) {
         try {
-            val page = api(session).transactions(1, state.value.filters)
-            mutableState.update { it.copy(transactions = page) }
+            loadSnapshot(session, 1)
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (_: Exception) {
@@ -167,17 +237,56 @@ internal class MoneyViewModel(application: Application) : AndroidViewModel(appli
     }
 
     private suspend fun loadDashboard(session: Session, page: Int) {
-        val api = api(session)
-        val categories = api.categories()
-        val transactions = api.transactions(page, state.value.filters)
-        mutableState.update { it.copy(categories = categories, transactions = transactions) }
+        val scope = settings.scope(session)
+        val cached = settings.categories(scope)
+        mutableState.update { it.copy(categories = cached) }
+        showLocalDashboard(session)
+        val categories = api(session).categories()
+        settings.saveCategories(scope, categories)
+        mutableState.update { it.copy(categories = categories) }
+        BankCategoryWorker.schedule(context, scope)
+        loadSnapshot(session, page)
+    }
+
+    private suspend fun loadSnapshot(session: Session, page: Int) {
+        val scope = settings.scope(session)
+        val filters = state.value.filters
+        val snapshot = bankImportSync.withLock {
+            val local = withContext(Dispatchers.IO) { store.localImports(scope) }
+            val probe = local.asSequence().filter { it.sent && it.remoteId == null && !it.deleted }
+                .take(100).map { it.movement.importId }.toSet()
+            api(session).transactions(page, filters, probe).copy(
+                unsentAtSnapshot = local.asSequence().filter { !it.sent }.map { it.movement.importId }.toSet()
+            )
+        }
+        if (state.value.session != session || state.value.filters != filters) return
+        val previous = snapshots[filters]
+        snapshots[filters] = if (page > 1 && previous != null) {
+            snapshot.copy(items = (previous.items + snapshot.items).distinctBy { it.id })
+        } else snapshot
+        showLocalDashboard(session)
+    }
+
+    private suspend fun showLocalDashboard(session: Session) {
+        val scope = settings.scope(session)
+        val local = withContext(Dispatchers.IO) { store.localImports(scope) }
+        val current = state.value
+        if (current.session != session) return
+        val snapshot = snapshots[current.filters]
+        val dashboard = reconcileImports(snapshot, local, current.filters, current.categories)
+        mutableState.update { it.copy(transactions = dashboard) }
     }
 
     private suspend fun loadDrafts(session: Session) {
         val scope = settings.scope(session)
         val drafts = withContext(Dispatchers.IO) { store.pending(scope) }
         mutableState.update {
-            if (it.session == session) it.copy(drafts = drafts, bankPackage = settings.bank(scope)) else it
+            if (it.session == session) it.copy(
+                drafts = drafts,
+                bankPackage = settings.bank(scope),
+                enabledBanks = settings.captureConfig()?.enabledSince?.keys.orEmpty(),
+                functionGemmaInstalled = FunctionGemmaClassifier.installed(context)
+            ) else it
         }
     }
 
@@ -185,7 +294,10 @@ internal class MoneyViewModel(application: Application) : AndroidViewModel(appli
     private fun message(message: String) = mutableState.update { it.copy(message = message) }
 
     private fun clearSession() {
+        val scope = state.value.session?.let(settings::scope)
         settings.signOut()
+        if (scope != null) BankImportWorker.cancel(context, scope)
+        snapshots.clear()
         mutableState.value = AppState(settings.baseUrl)
     }
 

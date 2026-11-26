@@ -7,6 +7,8 @@ import android.content.Intent
 import android.os.Bundle
 import android.provider.Settings
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
@@ -26,6 +28,8 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.repeatOnLifecycle
 import java.math.BigDecimal
 import java.text.NumberFormat
 import java.time.Instant
@@ -43,6 +47,11 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         setContent {
             val state by model.state.collectAsStateWithLifecycle()
+            LaunchedEffect(state.session, state.categories) {
+                if (state.session != null) lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+                    model.classifyInForeground()
+                }
+            }
             MaterialTheme(colorScheme = darkColorScheme(primary = Color(0xFF75D4AE))) {
                 Scaffold { padding ->
                     Column(Modifier.padding(padding).fillMaxSize()) {
@@ -68,7 +77,7 @@ class MainActivity : ComponentActivity() {
         val component = ComponentName(this, BankNotificationService::class.java)
         notificationAccess = getSystemService(NotificationManager::class.java)
             .isNotificationListenerAccessGranted(component)
-        if (model.state.value.session != null) model.refreshDrafts()
+        if (model.state.value.session != null) model.refresh()
     }
 }
 
@@ -111,6 +120,7 @@ private fun Dashboard(state: AppState, model: MoneyViewModel, access: Boolean, o
     var inbox by rememberSaveable { mutableStateOf(false) }
     var showFilters by rememberSaveable { mutableStateOf(false) }
     var target by remember { mutableStateOf<EditTarget?>(null) }
+    var categorizing by remember { mutableStateOf<Transaction?>(null) }
     var deleting by remember { mutableStateOf<Transaction?>(null) }
     var reopening by remember { mutableStateOf<PurchaseDraft?>(null) }
     val active = !state.busy
@@ -131,7 +141,9 @@ private fun Dashboard(state: AppState, model: MoneyViewModel, access: Boolean, o
             }
         }
         if (inbox) {
-            item { CaptureSettings(state.bankPackage, access, active, model::saveBank, openSettings) }
+            item {
+                CaptureSettings(state, access, model::saveBank, model::setBankEnabled, model::installFunctionGemma, openSettings)
+            }
             item { TextButton(onClick = model::refreshDrafts, enabled = active) { Text("Atualizar capturas") } }
             if (state.drafts.isEmpty()) item { Text("Nenhuma compra para revisar.") }
             items(state.drafts, key = { it.id }) { draft ->
@@ -163,6 +175,7 @@ private fun Dashboard(state: AppState, model: MoneyViewModel, access: Boolean, o
                         Text("Saldo", style = MaterialTheme.typography.labelLarge)
                         Text(money(page.balance), style = MaterialTheme.typography.headlineMedium)
                         Text("Entradas ${money(page.revenue)} · Saídas ${money(page.expense)}")
+                        if (page.partial) Text("Saldo parcial · aguardando dados do servidor")
                     }
                 }
             }
@@ -177,18 +190,27 @@ private fun Dashboard(state: AppState, model: MoneyViewModel, access: Boolean, o
             }
             if (page != null) {
                 if (page.items.isEmpty()) item { Text("Nenhuma transação encontrada.") }
-                items(page.items, key = { it.id }) { row ->
+                items(page.items, key = { it.importId ?: it.id }) { row ->
                     Card(Modifier.fillMaxWidth()) {
                         Column(Modifier.padding(16.dp)) {
                             Text(row.input.description, style = MaterialTheme.typography.titleMedium)
                             Text(if (row.input.typeId == 2) "−${money(row.input.cents)}" else money(row.input.cents))
-                            val posted = runCatching { date(Instant.parse(row.createdAt)) }.getOrDefault("")
-                            Text(listOf(row.category, posted).filter(String::isNotEmpty).joinToString(" · "))
+                            val posted = runCatching { date(Instant.parse(row.occurredAt ?: row.createdAt)) }.getOrDefault("")
+                            val sync = when {
+                                row.syncRejected -> "Sincronização recusada"
+                                row.pending -> "Aguardando sincronização"
+                                else -> null
+                            }
+                            Text(listOfNotNull(row.category, posted, sync)
+                                .filter(String::isNotEmpty).joinToString(" · "))
                             Row {
-                                TextButton(onClick = { target = EditTarget(transaction = row) }, enabled = active) {
-                                    Text("Editar")
+                                TextButton(onClick = {
+                                    if (row.importId == null) target = EditTarget(transaction = row)
+                                    else categorizing = row
+                                }, enabled = active && state.categories.isNotEmpty()) {
+                                    Text(if (row.importId == null) "Editar" else "Alterar categoria")
                                 }
-                                TextButton(onClick = { deleting = row }, enabled = active) { Text("Excluir") }
+                                if (row.id > 0) TextButton(onClick = { deleting = row }, enabled = active) { Text("Excluir") }
                             }
                         }
                     }
@@ -198,6 +220,21 @@ private fun Dashboard(state: AppState, model: MoneyViewModel, access: Boolean, o
                 }
             }
         }
+    }
+    categorizing?.let { row ->
+        var selected by remember(row) { mutableIntStateOf(row.input.categoryId) }
+        AlertDialog(
+            onDismissRequest = { categorizing = null },
+            title = { Text("Alterar categoria") },
+            text = { Choice("Categoria", selected, state.categories.map { it.id to it.name }) { selected = it } },
+            confirmButton = {
+                TextButton(
+                    onClick = { model.saveImportCategory(row, selected) { categorizing = null } },
+                    enabled = active && state.categories.any { it.id == selected }
+                ) { Text("Salvar") }
+            },
+            dismissButton = { TextButton(onClick = { categorizing = null }) { Text("Cancelar") } }
+        )
     }
     target?.let { editor ->
         EditTransaction(editor, state.categories, state.busy, state.message, close = { target = null }) { input ->
@@ -231,15 +268,36 @@ private fun Dashboard(state: AppState, model: MoneyViewModel, access: Boolean, o
 }
 
 @Composable
-private fun CaptureSettings(bank: String, access: Boolean, active: Boolean, save: (String) -> Unit, open: () -> Unit) {
+private fun CaptureSettings(
+    state: AppState, access: Boolean, save: (String) -> Unit, setEnabled: (Bank, Boolean) -> Unit,
+    installModel: (android.net.Uri) -> Unit, open: () -> Unit
+) {
+    val bank = state.bankPackage
+    val active = !state.busy
     var field by rememberSaveable(bank) { mutableStateOf(bank) }
+    val selectModel = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        uri?.let(installModel)
+    }
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("Captura de compras", style = MaterialTheme.typography.titleLarge)
+            Text("Notificações bancárias", style = MaterialTheme.typography.titleLarge)
             Text(if (access) "Acesso às notificações concedido." else "Conceda acesso às notificações pelo Android.")
             TextButton(onClick = open) { Text("Configurações do Android") }
-            Field(field, { field = it }, "Pacote do aplicativo do banco")
-            Text("Formato reconhecido: Compra aprovada de R$ 42,90 em Mercado X")
+            if (BuildConfig.DEBUG) {
+                Text("Lançamentos automáticos experimentais")
+                Bank.entries.forEach { source ->
+                    Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                        Checkbox(
+                            source in state.enabledBanks, { setEnabled(source, it) }, enabled = access && active
+                        )
+                        Text(source.appName)
+                    }
+                }
+                TextButton(onClick = { selectModel.launch(arrayOf("*/*")) }, enabled = active) {
+                    Text(if (state.functionGemmaInstalled) "Substituir FunctionGemma local" else "Instalar FunctionGemma local")
+                }
+            }
+            Field(field, { field = it }, "Pacote para revisão manual")
             Row {
                 Button(onClick = { save(field) }, enabled = active && field.isNotBlank()) { Text("Salvar pacote") }
                 if (bank.isNotEmpty()) TextButton(onClick = { save("") }, enabled = active) { Text("Pausar") }

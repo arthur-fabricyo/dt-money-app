@@ -10,6 +10,8 @@ import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 import org.json.JSONObject
+import org.json.JSONArray
+import java.time.Instant
 
 internal class AppSettings(context: Context) {
     private val prefs = context.getSharedPreferences("dt_money", Context.MODE_PRIVATE)
@@ -19,15 +21,29 @@ internal class AppSettings(context: Context) {
 
     fun scope(session: Session): String = "${session.userId}@$baseUrl"
 
-    fun captureConfig(): CaptureConfig? {
+    fun captureConfig(): CaptureConfig? = synchronized(lock) {
         val snapshot = prefs.all
-        val scope = snapshot["scope"] as? String ?: return null
-        val bank = snapshot["bank:$scope"] as? String ?: return null
-        return CaptureConfig(scope, bank)
+        val scope = snapshot["scope"] as? String ?: return@synchronized null
+        val banks = if (BuildConfig.DEBUG) Bank.entries.mapNotNull { bank ->
+            (snapshot["enabled:$scope:" + bank.name] as? Long)?.let { bank to Instant.ofEpochMilli(it) }
+        }.toMap() else emptyMap()
+        CaptureConfig(scope, banks, snapshot["bank:$scope"] as? String ?: "")
     }
 
+    fun withCapture(config: CaptureConfig, block: () -> Unit) = synchronized(lock) {
+        if (captureConfig() == config) block()
+    }
+
+    fun setBankEnabled(scope: String, bank: Bank, enabled: Boolean) = synchronized(lock) {
+        if (!BuildConfig.DEBUG || prefs.getString("scope", null) != scope) return@synchronized
+        val key = "enabled:$scope:" + bank.name
+        val editor = prefs.edit()
+        if (enabled && !prefs.contains(key)) editor.putLong(key, System.currentTimeMillis())
+        if (!enabled) editor.remove(key)
+        editor.apply()
+    }
     fun bank(scope: String): String = prefs.getString("bank:$scope", "").orEmpty()
-    fun saveBank(scope: String, bank: String) {
+    fun saveBank(scope: String, bank: String) = synchronized(lock) {
         prefs.edit().putString("bank:$scope", bank).apply()
     }
 
@@ -40,7 +56,7 @@ internal class AppSettings(context: Context) {
         Session(json.getLong("id"), json.getString("name"), json.getString("token"))
     }.getOrElse { signOut(); null }
 
-    fun saveSession(url: String, session: Session) {
+    fun saveSession(url: String, session: Session) = synchronized(lock) {
         val json = JSONObject().put("id", session.userId).put("name", session.name).put("token", session.token)
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.ENCRYPT_MODE, key())
@@ -49,8 +65,28 @@ internal class AppSettings(context: Context) {
             .putString("session", Base64.encodeToString(data, Base64.NO_WRAP)).apply()
     }
 
-    fun signOut() {
+    fun signOut() = synchronized(lock) {
         prefs.edit().remove("session").remove("scope").apply()
+    }
+
+    fun credentials(scope: String): Pair<String, Session>? = synchronized(lock) {
+        if (prefs.getString("scope", null) != scope) return@synchronized null
+        val session = loadSession() ?: return@synchronized null
+        baseUrl to session
+    }
+
+    fun categories(scope: String): List<Category> = runCatching {
+        val values = JSONArray(prefs.getString("categories:$scope", "[]"))
+        List(values.length()) { index ->
+            val category = values.getJSONObject(index)
+            Category(category.getInt("id"), category.getString("name"))
+        }
+    }.getOrDefault(emptyList())
+
+    fun saveCategories(scope: String, categories: List<Category>) {
+        val values = JSONArray()
+        categories.forEach { values.put(JSONObject().put("id", it.id).put("name", it.name)) }
+        prefs.edit().putString("categories:$scope", values.toString()).apply()
     }
 
     private fun key(): SecretKey {
@@ -68,7 +104,11 @@ internal class AppSettings(context: Context) {
 
     companion object {
         private const val KEY_ALIAS = "dt_money_session"
+        private val lock = Any()
     }
 }
 
-internal data class CaptureConfig(val scope: String, val packageName: String)
+internal data class CaptureConfig(val scope: String, val enabledSince: Map<Bank, Instant>, val legacyPackage: String) {
+    fun accepts(bank: Bank, postedAt: Instant): Boolean =
+        enabledSince[bank]?.let { !postedAt.isBefore(it) } ?: false
+}
