@@ -25,6 +25,7 @@ import * as ErrorHandler from "./infra/web/config/error-handler";
   app.listen(
     {
       port: 3001,
+      host: process.env.DT_MONEY_HOST,
     },
     () => {
       console.log("Api rodando na porta 3001");

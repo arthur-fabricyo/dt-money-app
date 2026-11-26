@@ -16,8 +16,8 @@ Siga os passos abaixo para configurar e rodar o projeto em seu ambiente local.
 ### 1️⃣ Clonar o repositório
 
 ```sh
-git clone https://github.com/brenooliveiranascimento/DT-money-backend.git
-cd dtmoney-backend
+git clone https://github.com/arthur-fabricyo/dt-money-app.git
+cd dt-money-app/DT-money-backend
 ```
 
 ### 2️⃣ Instalar as dependências
@@ -25,9 +25,7 @@ cd dtmoney-backend
 Utilize o gerenciador de pacotes **yarn** ou **npm** para instalar todas as dependências do projeto:
 
 ```sh
-yarn
-ou
-npm i
+npm install
 ```
 
 ### 3️⃣ Configurar a chave da API
@@ -45,9 +43,7 @@ Em cada ambiente implantado, configure `APP_SCRETET_KEY` no gerenciador de segre
 Execute o comando abaixo para criar as tabelas no banco de dados:
 
 ```sh
-yarn migration:run
-ou
-npm run migration:run
+npx typeorm-ts-node-commonjs migration:run -d src/infra/database/typeorm/dt-money/data-source.ts
 ```
 
 ### 5️⃣ Iniciar o servidor
@@ -55,10 +51,9 @@ npm run migration:run
 Agora, basta rodar o servidor com:
 
 ```sh
-yarn dev
-ou
 npm run dev
 ```
 
-O backend estará rodando em `http://localhost:3001`.
-Para acessar a documentação `http://localhost:3001/docs`
+Por padrão, a API e sua documentação ficam em `http://localhost:3001` e `http://localhost:3001/docs`.
+
+Para testar em um celular na mesma rede Wi‑Fi, coloque o IPv4 da interface Wi‑Fi do computador em `DT_MONEY_HOST` no `.env` e reinicie o servidor. A API passa a escutar nesse endereço, na porta `3001`. Confira a URL de login e o teste de conexão no [guia do Android](../dt-money-android/README.md#celular-físico-por-wi-fi-sem-usb).

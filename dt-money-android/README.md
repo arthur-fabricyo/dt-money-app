@@ -10,11 +10,27 @@ Abra esta pasta no Android Studio com JDK 17 ou superior e Android SDK 36. O app
 .\gradlew.bat :app:assembleDebug :app:testDebugUnitTest :app:lintDebug
 ```
 
-O APK fica em `app/build/outputs/apk/debug/app-debug.apk`. O backend legado escuta na porta 3001. No emulador, use `http://10.0.2.2:3001`. Em um aparelho conectado por USB, rode `adb reverse tcp:3001 tcp:3001` e use `http://127.0.0.1:3001`. A versão de produção exige uma URL HTTPS.
+O APK fica em `app/build/outputs/apk/debug/app-debug.apk`. Envie esse arquivo ao celular e abra-o para instalar. Configure o backend e rode as migrations conforme o [guia do backend](../DT-money-backend/README.md).
+
+### Celular físico por Wi-Fi, sem USB
+
+1. Conecte o celular e o computador à mesma rede Wi‑Fi. No Windows, execute `ipconfig` e copie o **Endereço IPv4** de **Adaptador de Rede sem Fio Wi-Fi**.
+2. Em `DT-money-backend/.env`, adicione `DT_MONEY_HOST` com o IP encontrado, por exemplo `DT_MONEY_HOST=192.168.1.42`. Na pasta `DT-money-backend`, inicie ou reinicie a API com `npm run dev`.
+3. No navegador do celular, abra `http://192.168.1.42:3001/docs`, substituindo o IP pelo do seu computador. Se a página não abrir, confira se a API está rodando e se o firewall permite conexões pela rede privada na porta TCP 3001.
+4. No login do DT Money, preencha **URL da API** com `http://192.168.1.42:3001`, usando o mesmo IP. A URL do login termina na porta `3001`.
+
+### Emulador ou USB
+
+| Ambiente | URL da API no login |
+| --- | --- |
+| Emulador do Android Studio com o backend em `localhost` | `http://10.0.2.2:3001` |
+| Celular por USB com o backend em `localhost`, após `adb reverse tcp:3001 tcp:3001` | `http://127.0.0.1:3001` |
+
+Use o APK debug para testar com HTTP. A versão de produção exige HTTPS.
 
 ## Lançamentos automáticos no APK de desenvolvimento
 
-1. Antes de iniciar a API, aplique a migration de importações a partir de `DT-money-backend` com `npx typeorm-ts-node-commonjs migration:run -d src/infra/database/typeorm/dt-money/data-source.ts`. Ela adiciona unicidade por usuário e a categoria **Sem categoria**.
+1. Confirme que aplicou as migrations do backend. A migration de importações adiciona unicidade por usuário e a categoria **Sem categoria**.
 2. Entre no app e abra **Capturas**. Em **Configurações do Android**, conceda acesso a notificações ao DT Money. Ative Nubank e Santander individualmente.
 3. Para usar FunctionGemma 270M, toque em **Instalar FunctionGemma local** e selecione um modelo `.litertlm` que tenha suporte a chamadas de função. O binário fica no aparelho. A documentação do Google descreve a preparação e a exportação do modelo. [FunctionGemma e LiteRT-LM](https://ai.google.dev/gemma/docs/mobile-actions)
 4. Abra **Transações** para ver os lançamentos. Use **Alterar categoria** para corrigir uma sugestão ou categorizar manualmente um item.

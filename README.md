@@ -14,7 +14,11 @@ Este projeto foi desenvolvido para resolver a necessidade de uma ferramenta de g
 
 ## Visão Geral
 
-O DT Money App é uma aplicação móvel de gestão financeira pessoal, desenvolvida com **React Native (Expo)**, que permite aos usuários registrar, categorizar e visualizar suas transações (receitas e despesas) de forma eficiente. O foco principal do projeto é demonstrar a construção de uma aplicação robusta, performática e com uma arquitetura bem definida, utilizando as melhores práticas do ecossistema React Native.
+O DT Money App é uma aplicação móvel de gestão financeira pessoal para registrar, categorizar e visualizar receitas e despesas. O cliente Android nativo usa **Kotlin e Jetpack Compose** e compartilha o backend Fastify com o cliente React Native (Expo).
+
+### Android nativo
+
+O APK de desenvolvimento registra Pix e compras aprovadas a partir de notificações do Nubank e do Santander. Para formatos novos, a IA local sugere os dados da transação e o app valida a movimentação antes de lançar. Veja como gerar o APK, configurar o login e testar no celular por Wi‑Fi no [guia do Android](dt-money-android/README.md).
 
 ## Solução Implementada
 
@@ -56,7 +60,7 @@ O projeto adota uma arquitetura modular, com uma clara separação de responsabi
 
 ---
 
-## 🚀 Como Rodar o Projeto Localmente
+## 🚀 Como Rodar o Cliente Expo Localmente
 
 Siga os passos abaixo para configurar o ambiente de desenvolvimento e executar o projeto em sua máquina.
 
