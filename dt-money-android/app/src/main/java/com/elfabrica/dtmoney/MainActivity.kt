@@ -7,25 +7,31 @@ import android.content.Intent
 import android.os.Bundle
 import android.provider.Settings
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.Lifecycle
@@ -37,6 +43,7 @@ import java.time.LocalDate
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
+import kotlinx.coroutines.delay
 
 class MainActivity : ComponentActivity() {
     private val model: MoneyViewModel by viewModels()
@@ -44,7 +51,10 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
+        enableEdgeToEdge(
+            statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
+            navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
+        )
         setContent {
             val state by model.state.collectAsStateWithLifecycle()
             LaunchedEffect(state.session, state.categories) {
@@ -52,11 +62,16 @@ class MainActivity : ComponentActivity() {
                     model.classifyInForeground()
                 }
             }
-            MaterialTheme(colorScheme = darkColorScheme(primary = Color(0xFF75D4AE))) {
-                Scaffold { padding ->
-                    Column(Modifier.padding(padding).fillMaxSize()) {
+            DtMoneyTheme {
+                Scaffold(containerColor = DtColors.Secondary) { padding ->
+                    Column(Modifier.padding(padding).consumeWindowInsets(padding).fillMaxSize()) {
                         if (state.busy) LinearProgressIndicator(Modifier.fillMaxWidth())
-                        state.message?.let { Text(it, Modifier.padding(horizontal = 20.dp, vertical = 8.dp)) }
+                        state.message?.let { message ->
+                            Surface(color = DtColors.Surface, modifier = Modifier.fillMaxWidth()) {
+                                Text(message, Modifier.padding(horizontal = 20.dp, vertical = 10.dp)
+                                    .semantics { liveRegion = LiveRegionMode.Polite })
+                            }
+                        }
                         if (state.session == null) {
                             SignIn(state, model::authenticate)
                         } else {
@@ -87,38 +102,6 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-@Composable
-private fun SignIn(state: AppState, authenticate: (String, String, String, String?) -> Unit) {
-    var registering by rememberSaveable { mutableStateOf(false) }
-    var url by rememberSaveable(state.baseUrl) { mutableStateOf(state.baseUrl) }
-    var name by rememberSaveable { mutableStateOf("") }
-    var email by rememberSaveable { mutableStateOf("") }
-    var password by remember { mutableStateOf("") }
-    Column(
-        Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(24.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
-        Text("DT Money", style = MaterialTheme.typography.headlineLarge)
-        Text(if (registering) "Criar conta" else "Entrar")
-        Field(url, { url = it }, "URL da API", KeyboardType.Uri)
-        if (registering) Field(name, { name = it }, "Nome")
-        Field(email, { email = it }, "E-mail", KeyboardType.Email)
-        OutlinedTextField(
-            password, { password = it }, Modifier.fillMaxWidth(), label = { Text("Senha") },
-            singleLine = true, visualTransformation = PasswordVisualTransformation(),
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password)
-        )
-        Button(
-            onClick = { authenticate(url, email, password, name.takeIf { registering }) },
-            enabled = !state.busy && url.isNotBlank() && email.isNotBlank() && password.isNotEmpty() &&
-                (!registering || name.isNotBlank())
-        ) { Text(if (registering) "Cadastrar" else "Entrar") }
-        TextButton(onClick = { registering = !registering }, enabled = !state.busy) {
-            Text(if (registering) "Já tenho uma conta" else "Criar conta")
-        }
-    }
-}
-
 private data class EditTarget(val transaction: Transaction? = null, val draft: PurchaseDraft? = null)
 
 @Composable
@@ -130,34 +113,49 @@ private fun Dashboard(state: AppState, model: MoneyViewModel, access: Boolean, o
     var deleting by remember { mutableStateOf<Transaction?>(null) }
     var reopening by remember { mutableStateOf<PurchaseDraft?>(null) }
     var reviewing by remember { mutableStateOf<String?>(null) }
+    var search by rememberSaveable { mutableStateOf(state.filters.search) }
     val active = !state.busy
+    val canEdit = active && state.categories.isNotEmpty()
+    val inset = Modifier.padding(horizontal = 20.dp)
+    val focusManager = LocalFocusManager.current
+    val canSearch = active && !inbox && !showFilters && target == null && categorizing == null && deleting == null
+    LaunchedEffect(search, canSearch, state.filters) {
+        if (canSearch && search != state.filters.search) {
+            delay(500)
+            model.filter(state.filters.copy(search = search))
+        }
+    }
     LazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(20.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
+        modifier = Modifier.fillMaxSize().imePadding(),
+        contentPadding = PaddingValues(bottom = 24.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         item {
-            Text("DT Money", style = MaterialTheme.typography.headlineMedium)
-            Text(state.session?.name.orEmpty())
-            Row {
-                TextButton(onClick = { inbox = false }, enabled = inbox) { Text("Transações") }
-                TextButton(onClick = { inbox = true; model.refreshDrafts() }, enabled = !inbox && active) {
-                    Text("Capturas (${state.drafts.size + state.bankReviews.size})")
-                }
-                TextButton(onClick = model::signOut, enabled = active) { Text("Sair") }
+            DashboardHeader(active, canEdit, onNew = { target = EditTarget() }, onSignOut = model::signOut)
+        }
+        item {
+            SecondaryTabRow(selectedTabIndex = if (inbox) 1 else 0, modifier = inset,
+                containerColor = DtColors.Secondary, contentColor = DtColors.Green) {
+                Tab(selected = !inbox, onClick = { inbox = false }, text = { Text("Transações") })
+                Tab(selected = inbox, onClick = { inbox = true; model.refreshDrafts() },
+                    text = { Text("Capturas (${state.drafts.size + state.bankReviews.size})") })
             }
         }
         if (inbox) {
             item {
-                CaptureSettings(state, access, model::saveBank, model::setBankEnabled, model::installFunctionGemma, openSettings)
+                Box(inset) {
+                    CaptureSettings(state, access, model::saveBank, model::setBankEnabled, model::installFunctionGemma, openSettings)
+                }
             }
-            item { TextButton(onClick = model::refreshDrafts, enabled = active) { Text("Atualizar capturas") } }
-            if (state.drafts.isEmpty() && state.bankReviews.isEmpty()) item { Text("Nenhuma captura para revisar.") }
+            item { TextButton(onClick = model::refreshDrafts, modifier = inset, enabled = active) { Text("Atualizar capturas") } }
+            if (state.drafts.isEmpty() && state.bankReviews.isEmpty()) item { EmptyMessage("Nenhuma captura para revisar.") }
             items(state.bankReviews, key = { "bank-${it.id}" }) { review ->
-                BankReviewCard(review, active, review = { reviewing = review.id }, discard = { model.discardBankReview(review) })
+                Box(inset) {
+                    BankReviewCard(review, active, review = { reviewing = review.id }, discard = { model.discardBankReview(review) })
+                }
             }
             items(state.drafts, key = { it.id }) { draft ->
-                Card(Modifier.fillMaxWidth()) {
+                DtCard(inset.fillMaxWidth()) {
                     Column(Modifier.padding(16.dp)) {
                         Text(draft.description, style = MaterialTheme.typography.titleMedium)
                         Text("${money(draft.cents)} · ${date(Instant.ofEpochMilli(draft.postedAt))}")
@@ -179,72 +177,41 @@ private fun Dashboard(state: AppState, model: MoneyViewModel, access: Boolean, o
             }
         } else {
             val page = state.transactions
-            if (page != null) item {
-                Card(Modifier.fillMaxWidth()) {
-                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Text("Saldo", style = MaterialTheme.typography.labelLarge)
-                        Text(money(page.balance), style = MaterialTheme.typography.headlineMedium)
-                        Text("Entradas ${money(page.revenue)} · Saídas ${money(page.expense)}")
-                        if (page.partial) Text("Saldo parcial · aguardando dados do servidor")
-                    }
-                }
-            }
+            if (page != null) item { AccountSummary(page, state.filters) }
             item {
-                Row {
-                    Button(onClick = { target = EditTarget() }, enabled = active && state.categories.isNotEmpty()) {
-                        Text("Nova transação")
-                    }
-                    TextButton(onClick = { showFilters = true }, enabled = active) { Text("Filtros") }
-                    TextButton(onClick = model::refresh, enabled = active) { Text("Atualizar") }
+                Box(inset) {
+                    TransactionsToolbar(
+                        state.filters, search, page?.takeIf { !it.partial && it.page >= it.totalPages }?.items?.size, active,
+                        onSearch = { search = it },
+                        onFilters = { focusManager.clearFocus(); showFilters = true }, onRefresh = model::refresh
+                    )
                 }
             }
             if (page != null) {
-                if (page.items.isEmpty()) item { Text("Nenhuma transação encontrada.") }
+                if (page.items.isEmpty()) item { EmptyMessage("Nenhuma transação encontrada.") }
                 items(page.items, key = { it.importId ?: it.id }) { row ->
-                    Card(Modifier.fillMaxWidth()) {
-                        Column(Modifier.padding(16.dp)) {
-                            Text(row.input.description, style = MaterialTheme.typography.titleMedium)
-                            Text(if (row.input.typeId == 2) "−${money(row.input.cents)}" else money(row.input.cents))
-                            val posted = runCatching { date(Instant.parse(row.occurredAt ?: row.createdAt)) }.getOrDefault("")
-                            val sync = when {
-                                row.syncRejected -> "Sincronização recusada"
-                                row.pending -> "Aguardando sincronização"
-                                else -> null
-                            }
-                            Text(listOfNotNull(row.category, posted, sync)
-                                .filter(String::isNotEmpty).joinToString(" · "))
-                            Row {
-                                TextButton(onClick = {
-                                    if (row.importId == null) target = EditTarget(transaction = row)
-                                    else categorizing = row
-                                }, enabled = active && state.categories.isNotEmpty()) {
-                                    Text(if (row.importId == null) "Editar" else "Alterar categoria")
-                                }
-                                if (row.id > 0) TextButton(onClick = { deleting = row }, enabled = active) { Text("Excluir") }
-                            }
-                        }
+                    Box(inset) {
+                        TransactionItem(row, active, canEdit, onEdit = {
+                            if (row.importId == null) target = EditTarget(transaction = row)
+                            else categorizing = row
+                        }, onDelete = { deleting = row })
                     }
                 }
                 if (page.page < page.totalPages) item {
-                    TextButton(onClick = model::loadMore, enabled = active) { Text("Carregar mais") }
+                    DtButton(model::loadMore, inset.fillMaxWidth(), enabled = active, outlined = true) { Text("Carregar mais") }
                 }
             }
         }
     }
     categorizing?.let { row ->
         var selected by remember(row) { mutableIntStateOf(row.input.categoryId) }
-        AlertDialog(
-            onDismissRequest = { categorizing = null },
-            title = { Text("Alterar categoria") },
-            text = { Choice("Categoria", selected, state.categories.map { it.id to it.name }) { selected = it } },
-            confirmButton = {
-                TextButton(
-                    onClick = { model.saveImportCategory(row, selected) { categorizing = null } },
-                    enabled = active && state.categories.any { it.id == selected }
-                ) { Text("Salvar") }
-            },
-            dismissButton = { TextButton(onClick = { categorizing = null }) { Text("Cancelar") } }
-        )
+        DtSheet("Alterar categoria", onClose = { categorizing = null }, closeEnabled = active) {
+            Choice("Categoria", selected, state.categories.map { it.id to it.name }) { selected = it }
+            DtButton(onClick = { model.saveImportCategory(row, selected) { categorizing = null } },
+                modifier = Modifier.fillMaxWidth(), enabled = active && state.categories.any { it.id == selected }) {
+                Text("Salvar")
+            }
+        }
     }
     target?.let { editor ->
         EditTransaction(editor, state.categories, state.busy, state.message, close = { target = null }) { input ->
@@ -258,17 +225,29 @@ private fun Dashboard(state: AppState, model: MoneyViewModel, access: Boolean, o
             }
         }
     }
-    if (showFilters) FilterDialog(state.filters, state.categories, close = { showFilters = false }) {
+    if (showFilters) FilterDialog(state.filters.copy(search = search), state.categories, active, close = { showFilters = false }) {
+        search = it.search
         showFilters = false
         model.filter(it)
     }
     deleting?.let { row ->
         AlertDialog(
             onDismissRequest = { deleting = null },
-            title = { Text("Excluir transação?") },
-            text = { Text(row.input.description) },
-            confirmButton = { TextButton(onClick = { deleting = null; model.delete(row.id) }) { Text("Excluir") } },
-            dismissButton = { TextButton(onClick = { deleting = null }) { Text("Cancelar") } }
+            title = { Text("Apagar transação") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(row.input.description)
+                    Text("Esta ação não pode ser desfeita.", color = DtColors.Muted)
+                }
+            },
+            confirmButton = {
+                Button(onClick = { deleting = null; model.delete(row.id) }, enabled = active,
+                    shape = RoundedCornerShape(6.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = DtColors.RedDark, contentColor = Color.White)) {
+                    Text("Apagar")
+                }
+            },
+            dismissButton = { DtButton(onClick = { deleting = null }, outlined = true) { Text("Cancelar") } }
         )
     }
     reopening?.let { draft ->
@@ -277,10 +256,17 @@ private fun Dashboard(state: AppState, model: MoneyViewModel, access: Boolean, o
             title = { Text("Voltar para revisão?") },
             text = { Text("Confirme no histórico que essa compra ainda precisa ser cadastrada.") },
             confirmButton = {
-                TextButton(onClick = { reopening = null; model.reopen(draft) }) { Text("Confirmar") }
+                TextButton(onClick = { reopening = null; model.reopen(draft) }, enabled = active) { Text("Confirmar") }
             },
             dismissButton = { TextButton(onClick = { reopening = null }) { Text("Cancelar") } }
         )
+    }
+}
+
+@Composable
+private fun EmptyMessage(message: String) {
+    Box(Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 28.dp), contentAlignment = Alignment.Center) {
+        Text(message, color = DtColors.Muted)
     }
 }
 
@@ -295,7 +281,7 @@ private fun CaptureSettings(
     val selectModel = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri?.let(installModel)
     }
-    Card(Modifier.fillMaxWidth()) {
+    DtCard(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("Notificações bancárias", style = MaterialTheme.typography.titleLarge)
             Text(if (access) "Acesso às notificações concedido." else "Conceda acesso às notificações pelo Android.")
@@ -303,11 +289,13 @@ private fun CaptureSettings(
             if (BuildConfig.DEBUG) {
                 Text("Lançamentos automáticos experimentais")
                 Bank.entries.forEach { source ->
-                    Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
-                        Checkbox(
-                            source in state.enabledBanks, { setEnabled(source, it) }, enabled = access && active
-                        )
-                        Text(source.appName)
+                    val enabled = access && active
+                    val checked = source in state.enabledBanks
+                    Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).toggleable(checked, enabled = enabled,
+                        role = Role.Switch, onValueChange = { setEnabled(source, it) }),
+                        verticalAlignment = Alignment.CenterVertically) {
+                        Text(source.appName, Modifier.weight(1f))
+                        Switch(checked, onCheckedChange = null, enabled = enabled)
                     }
                 }
                 TextButton(onClick = { selectModel.launch(arrayOf("*/*")) }, enabled = active) {
@@ -316,7 +304,7 @@ private fun CaptureSettings(
             }
             Field(field, { field = it }, "Pacote para revisão manual")
             Row {
-                Button(onClick = { save(field) }, enabled = active && field.isNotBlank()) { Text("Salvar pacote") }
+                DtButton(onClick = { save(field) }, enabled = active && field.isNotBlank()) { Text("Salvar pacote") }
                 if (bank.isNotEmpty()) TextButton(onClick = { save("") }, enabled = active) { Text("Pausar") }
             }
         }
@@ -342,82 +330,82 @@ private fun EditTransaction(
     val cents = amount.trim().takeIf { Regex("[0-9]+(?:[,.][0-9]{1,2})?").matches(it) }
         ?.replace(',', '.')?.toBigDecimalOrNull()?.movePointRight(2)
         ?.let { runCatching { it.longValueExact() }.getOrNull() }?.takeIf { it > 0 }
-    AlertDialog(
-        onDismissRequest = { if (!busy) close() },
-        title = { Text(if (draft != null) "Revisar compra" else "Transação") },
-        text = {
-            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Field(description, { description = it }, "Descrição")
-                Field(amount, { amount = it }, "Valor em reais", KeyboardType.Decimal)
-                if (draft == null) Choice("Tipo", type, listOf(1 to "Entrada", 2 to "Saída")) { type = it }
-                Choice("Categoria", category, categories.map { it.id to it.name }) { category = it }
-                if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
-                else message?.let { Text(it) }
-            }
-        },
-        confirmButton = {
-            val categoryId = category
-            TextButton(
-                onClick = { if (cents != null && categoryId != null) save(TransactionInput(description.trim(), cents, categoryId, type)) },
-                enabled = !busy && description.isNotBlank() && cents != null && categories.any { it.id == categoryId }
-            ) { Text("Salvar") }
-        },
-        dismissButton = { TextButton(onClick = close, enabled = !busy) { Text("Cancelar") } }
-    )
+    val title = when {
+        draft != null -> "Revisar compra"
+        existing != null -> "Editar transação"
+        else -> "Nova transação"
+    }
+    DtSheet(title, onClose = close, closeEnabled = !busy) {
+        Field(description, { description = it }, "Descrição")
+        Field(amount, { amount = it }, "Valor em reais", KeyboardType.Decimal)
+        if (draft == null) DirectionSelector(type) { type = it }
+        Choice("Categoria", category, categories.map { it.id to it.name }) { category = it }
+        if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
+        else message?.let { Text(it) }
+        val categoryId = category
+        DtButton(
+            onClick = { if (cents != null && categoryId != null) save(TransactionInput(description.trim(), cents, categoryId, type)) },
+            modifier = Modifier.fillMaxWidth(),
+            enabled = !busy && description.isNotBlank() && cents != null && categories.any { it.id == categoryId }
+        ) { Text(if (existing == null) "Cadastrar" else "Salvar alterações") }
+    }
 }
 
 @Composable
-private fun FilterDialog(current: Filters, categories: List<Category>, close: () -> Unit, apply: (Filters) -> Unit) {
+private fun FilterDialog(current: Filters, categories: List<Category>, active: Boolean, close: () -> Unit, apply: (Filters) -> Unit) {
     val zone = ZoneId.systemDefault()
     var search by remember { mutableStateOf(current.search) }
     var type by remember { mutableIntStateOf(current.typeId ?: 0) }
     var selected by remember { mutableStateOf(current.categoryIds) }
     var from by remember { mutableStateOf(current.from?.let { Instant.parse(it).atZone(zone).toLocalDate() }) }
     var to by remember { mutableStateOf(current.to?.let { Instant.parse(it).atZone(zone).toLocalDate() }) }
-    AlertDialog(
-        onDismissRequest = close,
-        title = { Text("Filtrar transações") },
-        text = {
-            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Field(search, { search = it }, "Buscar")
-                Choice("Tipo", type, listOf(0 to "Todos", 1 to "Entradas", 2 to "Saídas")) { type = it }
-                PickDate("De", from) { from = it }
-                PickDate("Até", to) { to = it }
-                Text("Categorias")
-                categories.forEach { category ->
-                    Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
-                        Checkbox(category.id in selected, { checked ->
-                            selected = if (checked) selected + category.id else selected - category.id
-                        })
-                        Text(category.name)
-                    }
-                }
+    DtSheet("Filtrar transações", onClose = close) {
+        Field(search, { search = it }, "Buscar")
+        DirectionSelector(type, includeAll = true) { type = it }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            PickDate("Data inicial", from, Modifier.weight(1f)) { from = it }
+            PickDate("Data final", to, Modifier.weight(1f)) { to = it }
+        }
+        Text("Categorias", style = MaterialTheme.typography.titleMedium)
+        categories.forEach { category ->
+            val categorySelected = category.id in selected
+            Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).toggleable(categorySelected, role = Role.Checkbox) { checked ->
+                selected = if (checked) selected + category.id else selected - category.id
+            }, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Checkbox(categorySelected, onCheckedChange = null)
+                Text(category.name)
             }
-        },
-        confirmButton = {
-            TextButton(
-                enabled = from?.let { start -> to?.isBefore(start) != true } ?: true,
+        }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            DtButton(onClick = { apply(Filters()) }, modifier = Modifier.weight(1f), enabled = active, outlined = true) {
+                Text("Limpar")
+            }
+            DtButton(
+                modifier = Modifier.weight(1f),
+                enabled = active && (from?.let { start -> to?.isBefore(start) != true } ?: true),
                 onClick = {
                     apply(Filters(search, type.takeIf { it != 0 }, selected,
                         from?.atStartOfDay(zone)?.toInstant()?.toString(),
                         to?.plusDays(1)?.atStartOfDay(zone)?.toInstant()?.minusMillis(1)?.toString()))
                 }
             ) { Text("Aplicar") }
-        },
-        dismissButton = { TextButton(onClick = { apply(Filters()) }) { Text("Limpar") } }
-    )
+        }
+    }
 }
 
 @Composable
-private fun PickDate(label: String, selected: LocalDate?, choose: (LocalDate?) -> Unit) {
+private fun PickDate(label: String, selected: LocalDate?, modifier: Modifier, choose: (LocalDate?) -> Unit) {
     val context = LocalContext.current
-    Row {
-        TextButton(onClick = {
+    Column(modifier, horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(label, style = MaterialTheme.typography.bodySmall, color = DtColors.Muted)
+        DtButton(onClick = {
             val day = selected ?: LocalDate.now()
             DatePickerDialog(context, { _, year, month, dayOfMonth ->
                 choose(LocalDate.of(year, month + 1, dayOfMonth))
             }, day.year, day.monthValue - 1, day.dayOfMonth).show()
-        }) { Text("$label ${selected?.format(DateTimeFormatter.ofPattern("dd/MM/yyyy")) ?: "—"}") }
+        }, modifier = Modifier.fillMaxWidth().semantics { contentDescription = label }, outlined = true) {
+            Text(selected?.format(DateTimeFormatter.ofPattern("dd/MM/yyyy")) ?: "Selecionar")
+        }
         if (selected != null) TextButton(onClick = { choose(null) }) { Text("Remover") }
     }
 }
@@ -425,22 +413,49 @@ private fun PickDate(label: String, selected: LocalDate?, choose: (LocalDate?) -
 @Composable
 internal fun Choice(label: String, selected: Int?, options: List<Pair<Int, String>>, choose: (Int) -> Unit) {
     var expanded by remember { mutableStateOf(false) }
-    Box {
-        OutlinedButton(onClick = { expanded = true }) {
-            Text(options.firstOrNull { it.first == selected }?.second ?: label)
-        }
-        DropdownMenu(expanded, { expanded = false }) {
-            options.forEach { (id, title) ->
-                DropdownMenuItem(text = { Text(title) }, onClick = { expanded = false; choose(id) })
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text(label, color = DtColors.Muted, style = MaterialTheme.typography.bodySmall)
+        BoxWithConstraints(Modifier.fillMaxWidth()) {
+            OutlinedButton(onClick = { expanded = true }, modifier = Modifier.fillMaxWidth().heightIn(min = 50.dp),
+                enabled = options.isNotEmpty(), shape = RoundedCornerShape(6.dp)) {
+                Text(options.firstOrNull { it.first == selected }?.second ?: "Selecionar", Modifier.weight(1f), color = DtColors.Text)
+                Text("⌄", color = DtColors.Muted)
+            }
+            DropdownMenu(expanded, { expanded = false }, modifier = Modifier.width(maxWidth)) {
+                options.forEach { (id, title) ->
+                    DropdownMenuItem(
+                        text = { Text(title, color = if (id == selected) DtColors.Green else DtColors.Text) },
+                        onClick = { expanded = false; choose(id) }
+                    )
+                }
             }
         }
     }
 }
 
 @Composable
+internal fun DirectionSelector(selected: Int?, includeAll: Boolean = false, choose: (Int) -> Unit) {
+    val options = if (includeAll) listOf(0 to "Todos", 1 to "Entrada", 2 to "Saída") else listOf(1 to "Entrada", 2 to "Saída")
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        options.forEach { (type, label) ->
+            val active = selected == type
+            val color = if (type == 2) DtColors.Red else DtColors.Green
+            val title = when (type) { 1 -> "↑ $label"; 2 -> "↓ $label"; else -> label }
+            FilterChip(
+                selected = active,
+                onClick = { choose(type) },
+                label = { Text(title) },
+                modifier = Modifier.weight(1f).heightIn(min = 50.dp),
+                colors = FilterChipDefaults.filterChipColors(selectedContainerColor = DtColors.Base,
+                    selectedLabelColor = color, labelColor = DtColors.Text)
+            )
+        }
+    }
+}
+
+@Composable
 internal fun Field(value: String, change: (String) -> Unit, label: String, keyboard: KeyboardType = KeyboardType.Text) {
-    OutlinedTextField(value, change, Modifier.fillMaxWidth(), label = { Text(label) }, singleLine = true,
-        keyboardOptions = KeyboardOptions(keyboardType = keyboard))
+    DtField(value, change, label, keyboard, modifier = Modifier.fillMaxWidth())
 }
 
 internal fun money(cents: Long): String =
