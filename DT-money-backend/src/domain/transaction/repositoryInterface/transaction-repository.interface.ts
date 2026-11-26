@@ -18,6 +18,8 @@ export interface GetTransactionsParams {
     id?: OrderDirection;
   };
   searchText?: string;
+  dateBasis?: "movement";
+  probeImportIds?: string[];
 }
 
 export interface UpdateTransactionParams {
@@ -34,6 +36,12 @@ export interface CreateTranscationParams {
   value: number;
   categoryId: number;
   userId: number;
+  description?: string;
+  importId?: string;
+  occurredAt?: string;
+  bank?: Transaction["bank"];
+  method?: Transaction["method"];
+  dateSource?: Transaction["dateSource"];
 }
 
 export interface TransactionTotalResponse {

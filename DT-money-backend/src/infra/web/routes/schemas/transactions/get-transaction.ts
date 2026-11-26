@@ -7,6 +7,8 @@ const successResponse = S.object()
   .prop("totalPages", S.number())
   .prop("page", S.number())
   .prop("perPage", S.number())
+  .prop("foundImportIds", S.array().items(S.string()))
+  .prop("latestTransactionId", S.number())
   .prop("totalTransactions", S.ref("TotalTransactions#"));
 
 const querystring = S.object()
@@ -17,7 +19,9 @@ const querystring = S.object()
   .prop("categoryIds", S.array().items(S.number().minimum(1)))
   .prop("from", S.string().format("date-time"))
   .prop("to", S.string().format("date-time"))
-  .prop("orderId", S.ref("OrderDirection#"));
+  .prop("orderId", S.ref("OrderDirection#"))
+  .prop("dateBasis", S.string().enum(["movement"]))
+  .prop("probeImportIds", S.array().maxItems(100).items(S.string().pattern("^[a-f0-9]{64}$")));
 
 export const getTransactionSchema: FastifySchema = {
   tags: ["Transaction"],

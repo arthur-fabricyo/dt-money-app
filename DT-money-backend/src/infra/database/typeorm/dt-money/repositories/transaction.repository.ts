@@ -1,4 +1,4 @@
-import { Brackets, Repository } from "typeorm";
+import { Brackets, EntityManager, Repository } from "typeorm";
 import { Transaction } from "../entities/Transaction";
 import { DtMoneyDataSource } from "../data-source";
 import {
@@ -11,20 +11,67 @@ import {
 import { DatabaseError } from "../../../../../shared/errors/database.error";
 import { Paginated } from "../../../../../interfaces/paginated";
 import { NotFoundError } from "../../../../../shared/errors/not-found.error";
+import { TransactionCategory } from "../entities/TransactionCategory";
+
+// SQLite uses one connection in this data source. Keep writes outside another
+// request's read transaction.
+let transactionQueue = Promise.resolve();
+function serialized<T>(operation: () => Promise<T>): Promise<T> {
+  const result = transactionQueue.then(operation);
+  transactionQueue = result.then(() => undefined, () => undefined);
+  return result;
+}
 
 export class TransactionRepository implements TransactionRepositoryInterface {
   private transactionRepository: Repository<Transaction>;
 
-  constructor() {
-    this.transactionRepository = DtMoneyDataSource.getRepository(Transaction);
+  constructor(manager = DtMoneyDataSource.manager) {
+    this.transactionRepository = manager.getRepository(Transaction);
+  }
+
+  readSnapshot(params: GetTransactionsParams) {
+    return serialized(() => DtMoneyDataSource.transaction(async (manager: EntityManager) => {
+      const repository = new TransactionRepository(manager);
+      const page = await repository.getTransactions(params);
+      const totalTransactions = await repository.getTransactionTotals(params);
+      const scoped = manager.getRepository(Transaction).createQueryBuilder("movement")
+        .withDeleted()
+        .where("movement.userId = :userId", { userId: params.userId });
+      const latest = await scoped.clone().select("COALESCE(MAX(movement.id), 0)", "id").getRawOne();
+      const foundImportIds = params.probeImportIds?.length
+        ? await scoped
+          .select("movement.importId", "importId")
+          .andWhere("movement.importId IN (:...ids)", { ids: params.probeImportIds })
+          .getRawMany<{ importId: string }>()
+        : [];
+      return {
+        ...page,
+        totalTransactions,
+        latestTransactionId: Number(latest.id),
+        foundImportIds: foundImportIds.map((row) => row.importId),
+      };
+    }));
   }
 
   async createTransaction(
     params: CreateTranscationParams
   ): Promise<Transaction> {
     try {
-      const transaction = await this.transactionRepository.save(params);
-      return transaction;
+      return await serialized(async () => {
+        const { occurredAt, ...fields } = params;
+        if (!fields.importId) return this.transactionRepository.save(fields);
+
+        const identity = { userId: fields.userId, importId: fields.importId };
+        const existing = await this.transactionRepository.findOne({ where: identity, withDeleted: true });
+        if (existing) return existing;
+
+        await this.transactionRepository.createQueryBuilder()
+          .insert().values({ ...fields, occurredAt: new Date(occurredAt) })
+          .orIgnore().execute();
+        const created = await this.transactionRepository.findOne({ where: identity, withDeleted: true });
+        if (!created) throw new Error("O lançamento importado não foi gravado.");
+        return created;
+      });
     } catch (error) {
       throw new DatabaseError("Falha ao criar transação", error);
     }
@@ -32,7 +79,7 @@ export class TransactionRepository implements TransactionRepositoryInterface {
 
   async deleteTransaction(transactionId: number): Promise<void> {
     try {
-      await this.transactionRepository.softDelete(transactionId);
+      await serialized(() => this.transactionRepository.softDelete(transactionId));
     } catch (error) {
       throw new DatabaseError("Falha ao excluir a transação", error);
     }
@@ -56,16 +103,46 @@ export class TransactionRepository implements TransactionRepositoryInterface {
 
   async updateTransaction(params: UpdateTransactionParams): Promise<void> {
     try {
-      await this.transactionRepository.save(params);
+      const { id, userId, categoryId, ...fields } = params;
+      await serialized(() => this.transactionRepository.createQueryBuilder().update()
+        .set({
+          ...fields,
+          ...(categoryId === undefined ? {} : {
+            categoryId,
+            categorySource: () => "CASE WHEN import_id IS NOT NULL AND category_id <> :categoryId THEN 'manual' ELSE category_source END",
+          }),
+        })
+        .where("id = :id AND user_id = :userId AND deleted_at IS NULL", { id, userId })
+        .setParameter("categoryId", categoryId)
+        .execute());
     } catch (error) {
       throw new DatabaseError("Falha ao atualizar a transação", error);
     }
+  }
+
+  updateImportCategory(userId: number, importId: string, categoryId: number, source: "manual" | "model") {
+    return serialized(async () => {
+      const catalog = this.transactionRepository.manager.getRepository(TransactionCategory);
+      const category = await catalog.findOneBy({ id: categoryId });
+      if (!category) return null;
+      const query = this.transactionRepository.createQueryBuilder().update()
+        .set({ categoryId, categorySource: source })
+        .where("user_id = :userId AND import_id = :importId AND deleted_at IS NULL", { userId, importId });
+      if (source === "model") {
+        if (category.name === "Sem categoria") return null;
+        const uncategorized = await catalog.findOneByOrFail({ name: "Sem categoria" });
+        query.andWhere("category_id = :unset AND category_source IS NOT 'manual'", { unset: uncategorized.id });
+      }
+      await query.execute();
+      return this.transactionRepository.findOne({ where: { userId, importId }, withDeleted: true });
+    });
   }
 
   async getTransactionTotals({
     userId,
     filters,
     searchText,
+    dateBasis,
   }: GetTransactionsParams): Promise<TransactionTotalResponse> {
     try {
       const query = this.transactionRepository
@@ -78,14 +155,17 @@ export class TransactionRepository implements TransactionRepositoryInterface {
           "COALESCE(SUM(CASE WHEN transaction.typeId = 1 THEN transaction.value ELSE 0 END), 0) - COALESCE(SUM(CASE WHEN transaction.typeId = 2 THEN transaction.value ELSE 0 END), 0) AS total",
         ])
         .where("transaction.userId = :userId", { userId });
+      const date = dateBasis === "movement"
+        ? "COALESCE(transaction.occurredAt, transaction.createdAt)"
+        : "transaction.createdAt";
       if (filters?.from) {
-        query.andWhere("transaction.createdAt >= :from", {
+        query.andWhere(`${date} >= :from`, {
           from: filters.from,
         });
       }
 
       if (filters?.to) {
-        query.andWhere("transaction.createdAt <= :to", {
+        query.andWhere(`${date} <= :to`, {
           to: filters.to,
         });
       }
@@ -139,6 +219,7 @@ export class TransactionRepository implements TransactionRepositoryInterface {
     filters,
     searchText,
     sort,
+    dateBasis,
   }: GetTransactionsParams): Promise<Paginated<Transaction>> {
     try {
       let totalRows = 0;
@@ -152,7 +233,14 @@ export class TransactionRepository implements TransactionRepositoryInterface {
         .leftJoinAndSelect("transaction.type", "type")
         .leftJoinAndSelect("transaction.category", "category");
 
-      if (sort?.id) {
+      const date = dateBasis === "movement"
+        ? "COALESCE(transaction.occurredAt, transaction.createdAt)"
+        : "transaction.createdAt";
+      if (dateBasis === "movement") {
+        query.addSelect(date, "movement_date");
+        query.addOrderBy("movement_date", "DESC");
+        query.addOrderBy("transaction.id", "DESC");
+      } else if (sort?.id) {
         query.addOrderBy(
           "transaction.id",
           sort.id.toUpperCase() as "ASC" | "DESC"
@@ -183,18 +271,18 @@ export class TransactionRepository implements TransactionRepositoryInterface {
       }
 
       if (filters?.from) {
-        query.andWhere("transaction.createdAt >= :from", {
+        query.andWhere(`${date} >= :from`, {
           from: filters.from,
         });
       }
 
       if (filters?.to) {
-        query.andWhere("transaction.createdAt <= :to", {
+        query.andWhere(`${date} <= :to`, {
           to: filters.to,
         });
       }
 
-      if (filters?.to && !filters.from) {
+      if (!dateBasis && filters?.to && !filters.from) {
         query.andWhere("transaction.createdAt >= :to", { to: filters.to });
       }
 

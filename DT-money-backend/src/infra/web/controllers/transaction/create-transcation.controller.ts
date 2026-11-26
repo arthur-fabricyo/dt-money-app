@@ -15,6 +15,16 @@ export class CreateTransactionController {
   ) => {
     const body = request.body;
     const userId = request.user.id;
+    const metadata = [body.importId, body.occurredAt, body.bank, body.method, body.dateSource];
+    if (metadata.some(Boolean) && (
+      !metadata.every(Boolean) || ![1, 2].includes(body.typeId) ||
+      (body.method !== "pix" && body.typeId !== 2) || !body.description?.trim() ||
+      !Number.isFinite(body.value) || body.value <= 0 ||
+      !Number.isSafeInteger(Math.round(body.value * 100)) ||
+      Math.abs(body.value * 100 - Math.round(body.value * 100)) > 1e-7
+    )) {
+      return reply.status(422).send({ message: "Metadados de importação inválidos." });
+    }
     const transaction = await this.createTransactionUseCase.execute({
       ...body,
       userId,

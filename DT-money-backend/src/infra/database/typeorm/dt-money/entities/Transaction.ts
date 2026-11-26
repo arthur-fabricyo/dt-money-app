@@ -32,6 +32,24 @@ export class Transaction {
   @Column({ name: "value", type: "int", nullable: false })
   value: number;
 
+  @Column({ name: "import_id", type: "text", nullable: true })
+  importId?: string;
+
+  @Column({ name: "occurred_at", type: "datetime", nullable: true })
+  occurredAt?: Date;
+
+  @Column({ type: "text", nullable: true })
+  bank?: "nubank" | "santander";
+
+  @Column({ type: "text", nullable: true })
+  method?: "pix" | "credit" | "debit" | "unknown";
+
+  @Column({ name: "date_source", type: "text", nullable: true })
+  dateSource?: "alert" | "posted";
+
+  @Column({ name: "category_source", type: "text", nullable: true })
+  categorySource?: "manual" | "model";
+
   @CreateDateColumn({
     name: "created_at",
     type: "datetime",

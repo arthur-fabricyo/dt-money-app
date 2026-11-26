@@ -1,4 +1,4 @@
-import { FastifyRequest } from "fastify";
+import { FastifyReply, FastifyRequest } from "fastify";
 import jwt from "jsonwebtoken";
 import { UserTypeormRepository } from "../../database/typeorm/dt-money/repositories/user.repository";
 
@@ -9,22 +9,29 @@ export class CheckAuthtenticationMiddleware {
     this.authRepository = new UserTypeormRepository();
   }
 
-  execute = async (request: FastifyRequest) => {
+  execute = async (request: FastifyRequest, reply: FastifyReply) => {
     const authorizationHeader = request.headers?.authorization;
 
     if (!authorizationHeader) {
-      throw new Error("Sem autorização");
+      return reply.code(401).send({ message: "Sessão inválida." });
     }
 
     const [, token] = authorizationHeader.split(" ");
 
     if (!token || token === "") {
-      throw new Error("Não possui token");
+      return reply.code(401).send({ message: "Sessão inválida." });
     }
 
-    const { email } = jwt.verify(token, process.env.APP_SCRETET_KEY) as {
-      email: string;
-    };
+    let email: string;
+    try {
+      const payload = jwt.verify(token, process.env.APP_SCRETET_KEY);
+      if (typeof payload === "string" || typeof payload.email !== "string") {
+        throw new Error("Invalid token claims");
+      }
+      email = payload.email;
+    } catch {
+      return reply.code(401).send({ message: "Sessão expirada ou inválida." });
+    }
 
     try {
       const user = await this.authRepository.findByEmail(email);
