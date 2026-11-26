@@ -12,6 +12,7 @@ import javax.crypto.spec.GCMParameterSpec
 import org.json.JSONObject
 import org.json.JSONArray
 import java.time.Instant
+import java.util.UUID
 
 internal class AppSettings(context: Context) {
     private val prefs = context.getSharedPreferences("dt_money", Context.MODE_PRIVATE)
@@ -27,7 +28,7 @@ internal class AppSettings(context: Context) {
         val banks = if (BuildConfig.DEBUG) Bank.entries.mapNotNull { bank ->
             (snapshot["enabled:$scope:" + bank.name] as? Long)?.let { bank to Instant.ofEpochMilli(it) }
         }.toMap() else emptyMap()
-        CaptureConfig(scope, banks, snapshot["bank:$scope"] as? String ?: "")
+        CaptureConfig(scope, banks, snapshot["bank:$scope"] as? String ?: "", snapshot["session_generation"] as? String)
     }
 
     fun withCapture(config: CaptureConfig, block: () -> Unit) = synchronized(lock) {
@@ -62,11 +63,12 @@ internal class AppSettings(context: Context) {
         cipher.init(Cipher.ENCRYPT_MODE, key())
         val data = cipher.iv + cipher.doFinal(json.toString().toByteArray())
         prefs.edit().putString("api", url).putString("scope", "${session.userId}@$url")
+            .putString("session_generation", UUID.randomUUID().toString())
             .putString("session", Base64.encodeToString(data, Base64.NO_WRAP)).apply()
     }
 
     fun signOut() = synchronized(lock) {
-        prefs.edit().remove("session").remove("scope").apply()
+        prefs.edit().remove("session").remove("scope").remove("session_generation").apply()
     }
 
     fun credentials(scope: String): Pair<String, Session>? = synchronized(lock) {
@@ -108,7 +110,9 @@ internal class AppSettings(context: Context) {
     }
 }
 
-internal data class CaptureConfig(val scope: String, val enabledSince: Map<Bank, Instant>, val legacyPackage: String) {
+internal data class CaptureConfig(
+    val scope: String, val enabledSince: Map<Bank, Instant>, val legacyPackage: String, val sessionGeneration: String? = null
+) {
     fun accepts(bank: Bank, postedAt: Instant): Boolean =
         enabledSince[bank]?.let { !postedAt.isBefore(it) } ?: false
 }

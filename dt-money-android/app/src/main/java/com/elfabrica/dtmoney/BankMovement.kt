@@ -23,7 +23,8 @@ internal data class BankAlert(
     val body: String,
     val notificationKey: String,
     val postedAt: Instant,
-    val eventTime: Instant?
+    val eventTime: Instant?,
+    val identityTime: Instant? = eventTime
 )
 
 internal data class BankMovement(
@@ -37,7 +38,8 @@ internal data class BankMovement(
     val dateSource: DateSource
 )
 
-private const val amount = """R\x24\s*(\d{1,3}(?:\.\d{3})+|\d+),(\d{2})"""
+internal const val BANK_AMOUNT = """R\x24\s*(\d{1,3}(?:\.\d{3})+|\d+),(\d{2})"""
+private const val amount = BANK_AMOUNT
 private val currency = Regex("""R\x24""", RegexOption.IGNORE_CASE)
 private val receivedPix = Regex(
     """(?:Pix recebido|Voc[eê] recebeu (?:um )?Pix)(?: de|:)?\s+""" + amount + """(?:\s+de\s+(.+))?""",
@@ -45,6 +47,11 @@ private val receivedPix = Regex(
 )
 private val sentPix = Regex(
     """(?:Pix enviado|Voc[eê] enviou (?:um )?Pix)(?: de|:)?\s+""" + amount + """(?:\s+para\s+(.+))?""",
+    RegexOption.IGNORE_CASE
+)
+private val santanderPix = Regex(
+    """Pix (recebido|enviado) em (\d{2}/\d{2}/\d{4}) [aà]s (\d{2}:\d{2}) no valor de """ +
+        amount + """\.?""",
     RegexOption.IGNORE_CASE
 )
 private val card = Regex(
@@ -67,8 +74,16 @@ internal fun parseBankMovement(alert: BankAlert): BankMovement? {
     val body = normalizeBankText(alert.body)
     val title = normalizeBankText(alert.title).trimEnd(':')
     if (incompatibleStatus.containsMatchIn(title) || incompatibleStatus.containsMatchIn(body)) return null
+    if (alert.bank == Bank.SANTANDER) parseSantanderPix(alert, body)?.let { return it }
     return parseMovementText(alert, body)
         ?: parseMovementText(alert, if (title.isEmpty()) body else "$title: $body")
+}
+
+private fun parseSantanderPix(alert: BankAlert, text: String): BankMovement? {
+    val (status, day, time, reais, centavos) = santanderPix.matchEntire(text)?.destructured ?: return null
+    val direction = if (status.equals("recebido", ignoreCase = true)) Direction.INCOME else Direction.EXPENSE
+    val cents = parseCentavos(reais, centavos) ?: return null
+    return buildMovement(alert, direction, PaymentMethod.PIX, cents, "", parseAlertDate("$day $time", alert.postedAt), null)
 }
 
 private fun parseMovementText(alert: BankAlert, text: String): BankMovement? {
@@ -86,33 +101,57 @@ private fun parseMovementText(alert: BankAlert, text: String): BankMovement? {
         else -> PaymentMethod.UNKNOWN
     }
     val offset = if (purchase == null) 0 else 1
-    val cents = (match.groupValues[1 + offset].replace(".", "") + match.groupValues[2 + offset])
-        .toLongOrNull()?.takeIf { it in 1..999_999_999_999L } ?: return null
+    val cents = parseCentavos(match.groupValues[1 + offset], match.groupValues[2 + offset]) ?: return null
+    val datePart = parts.drop(1).singleOrNull { it.startsWith("Data:", ignoreCase = true) }
+    val date = datePart?.let { parseAlertDate(it.substringAfter(':').trim(), alert.postedAt) }
+    val bankReference = parts.drop(1).mapNotNull { reference.matchEntire(it)?.groupValues?.get(1) }
+        .singleOrNull()?.uppercase(Locale.ROOT)
+    return buildMovement(alert, direction, method, cents, match.groupValues[3 + offset], date, bankReference)
+}
+
+internal fun parseCentavos(reais: String, centavos: String): Long? =
+    (reais.replace(".", "") + centavos).toLongOrNull()?.takeIf { it in 1..999_999_999_999L }
+
+internal fun parseAlertDate(text: String, postedAt: Instant): Instant? = runCatching {
+    LocalDateTime.parse(text, alertDate).atZone(ZoneId.of("America/Sao_Paulo")).toInstant()
+}.getOrNull()?.takeUnless { it.isAfter(postedAt.plusSeconds(300)) }
+
+internal fun buildMovement(
+    alert: BankAlert,
+    direction: Direction,
+    method: PaymentMethod,
+    cents: Long,
+    counterparty: String,
+    date: Instant?,
+    bankReference: String?
+): BankMovement {
     val fallback = if (method == PaymentMethod.PIX) {
         if (direction == Direction.INCOME) "Pix recebido" else "Pix enviado"
     } else "Compra aprovada"
-    val description = sensitiveDescription.replace(match.groupValues[3 + offset], "").trim()
+    val description = sensitiveDescription.replace(counterparty, "").trim()
         .take(120).ifBlank { "$fallback · " + alert.bank.appName }
-    val datePart = parts.drop(1).singleOrNull { it.startsWith("Data:", ignoreCase = true) }
-    val date = datePart?.let {
-        runCatching {
-            LocalDateTime.parse(it.substringAfter(':').trim(), alertDate)
-                .atZone(ZoneId.of("America/Sao_Paulo")).toInstant()
-        }.getOrNull()?.takeUnless { it.isAfter(alert.postedAt.plusSeconds(300)) }
-    }
-    val bankReference = parts.drop(1).mapNotNull { reference.matchEntire(it)?.groupValues?.get(1) }
-        .singleOrNull()?.uppercase(Locale.ROOT)
     val eventIdentity = if (bankReference != null) "bank:$bankReference" else
         "android:" + listOf(alert.notificationKey, alert.eventTime ?: alert.postedAt, method, cents, description)
             .joinToString("|")
-    val key = MessageDigest.getInstance("SHA-256")
-        .digest((alert.bank.name + "|" + direction.name + "|" + eventIdentity).toByteArray(Charsets.UTF_8))
-        .joinToString("") { "%02x".format(it) }
+    val key = movementId(alert.bank, direction, eventIdentity)
     return BankMovement(
         key, alert.bank, direction, method, cents, description, date ?: alert.postedAt,
         if (date == null) DateSource.POSTED else DateSource.ALERT
     )
 }
 
-private fun normalizeBankText(text: String) =
+internal fun bankImportHash(identity: String): String = MessageDigest.getInstance("SHA-256")
+    .digest(identity.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
+
+internal fun bankEventId(alert: BankAlert): String = bankImportHash(
+    "event|${alert.bank.name}|${alert.notificationKey}|${alert.identityTime ?: alert.postedAt}"
+)
+
+internal fun movementId(bank: Bank, direction: Direction, eventIdentity: String) =
+    bankImportHash("${bank.name}|${direction.name}|$eventIdentity")
+
+internal fun bankReference(text: String): String? = reference.findAll(text)
+    .map { it.groupValues[1].uppercase(Locale.ROOT) }.distinct().toList().singleOrNull()
+
+internal fun normalizeBankText(text: String) =
     text.replace('\u00a0', ' ').replace('\u202f', ' ').replace(Regex("""\s+"""), " ").trim()
