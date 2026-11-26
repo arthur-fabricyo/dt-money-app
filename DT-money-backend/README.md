@@ -30,7 +30,17 @@ ou
 npm i
 ```
 
-### 3️⃣ Rodar as migrations
+### 3️⃣ Configurar a chave da API
+
+Na pasta do backend, crie um `.env` local com uma chave JWT aleatória. O comando abaixo cria o arquivo com a variável documentada em `.env.example` e preserva um `.env` que já exista.
+
+```sh
+node -e "require('node:fs').writeFileSync('.env', 'APP_SCRETET_KEY=' + require('node:crypto').randomBytes(32).toString('hex') + '\n', { flag: 'wx' })"
+```
+
+Em cada ambiente implantado, configure `APP_SCRETET_KEY` no gerenciador de segredos da hospedagem. A rotação da chave invalida os JWTs assinados com a chave anterior.
+
+### 4️⃣ Rodar as migrations
 
 Execute o comando abaixo para criar as tabelas no banco de dados:
 
@@ -40,7 +50,7 @@ ou
 npm run migration:run
 ```
 
-### 4️⃣ Iniciar o servidor
+### 5️⃣ Iniciar o servidor
 
 Agora, basta rodar o servidor com:
 
