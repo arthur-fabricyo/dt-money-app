@@ -23,7 +23,8 @@ internal data class BankAlert(
     val body: String,
     val notificationKey: String,
     val postedAt: Instant,
-    val eventTime: Instant?
+    val eventTime: Instant?,
+    val identityTime: Instant? = eventTime
 )
 
 internal data class BankMovement(
@@ -37,7 +38,8 @@ internal data class BankMovement(
     val dateSource: DateSource
 )
 
-private const val amount = """R\x24\s*(\d{1,3}(?:\.\d{3})+|\d+),(\d{2})"""
+internal const val BANK_AMOUNT = """R\x24\s*(\d{1,3}(?:\.\d{3})+|\d+),(\d{2})"""
+private const val amount = BANK_AMOUNT
 private val currency = Regex("""R\x24""", RegexOption.IGNORE_CASE)
 private val receivedPix = Regex(
     """(?:Pix recebido|Voc[eê] recebeu (?:um )?Pix)(?: de|:)?\s+""" + amount + """(?:\s+de\s+(.+))?""",
@@ -107,14 +109,14 @@ private fun parseMovementText(alert: BankAlert, text: String): BankMovement? {
     return buildMovement(alert, direction, method, cents, match.groupValues[3 + offset], date, bankReference)
 }
 
-private fun parseCentavos(reais: String, centavos: String): Long? =
+internal fun parseCentavos(reais: String, centavos: String): Long? =
     (reais.replace(".", "") + centavos).toLongOrNull()?.takeIf { it in 1..999_999_999_999L }
 
-private fun parseAlertDate(text: String, postedAt: Instant): Instant? = runCatching {
+internal fun parseAlertDate(text: String, postedAt: Instant): Instant? = runCatching {
     LocalDateTime.parse(text, alertDate).atZone(ZoneId.of("America/Sao_Paulo")).toInstant()
 }.getOrNull()?.takeUnless { it.isAfter(postedAt.plusSeconds(300)) }
 
-private fun buildMovement(
+internal fun buildMovement(
     alert: BankAlert,
     direction: Direction,
     method: PaymentMethod,
@@ -131,14 +133,25 @@ private fun buildMovement(
     val eventIdentity = if (bankReference != null) "bank:$bankReference" else
         "android:" + listOf(alert.notificationKey, alert.eventTime ?: alert.postedAt, method, cents, description)
             .joinToString("|")
-    val key = MessageDigest.getInstance("SHA-256")
-        .digest((alert.bank.name + "|" + direction.name + "|" + eventIdentity).toByteArray(Charsets.UTF_8))
-        .joinToString("") { "%02x".format(it) }
+    val key = movementId(alert.bank, direction, eventIdentity)
     return BankMovement(
         key, alert.bank, direction, method, cents, description, date ?: alert.postedAt,
         if (date == null) DateSource.POSTED else DateSource.ALERT
     )
 }
 
-private fun normalizeBankText(text: String) =
+internal fun bankImportHash(identity: String): String = MessageDigest.getInstance("SHA-256")
+    .digest(identity.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
+
+internal fun bankEventId(alert: BankAlert): String = bankImportHash(
+    "event|${alert.bank.name}|${alert.notificationKey}|${alert.identityTime ?: alert.postedAt}"
+)
+
+internal fun movementId(bank: Bank, direction: Direction, eventIdentity: String) =
+    bankImportHash("${bank.name}|${direction.name}|$eventIdentity")
+
+internal fun bankReference(text: String): String? = reference.findAll(text)
+    .map { it.groupValues[1].uppercase(Locale.ROOT) }.distinct().toList().singleOrNull()
+
+internal fun normalizeBankText(text: String) =
     text.replace('\u00a0', ' ').replace('\u202f', ' ').replace(Regex("""\s+"""), " ").trim()

@@ -4,6 +4,7 @@ import android.content.ContentValues
 import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
+import androidx.core.database.sqlite.transaction
 import java.time.Instant
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -43,7 +44,7 @@ internal data class ImportReceipt(
 )
 
 internal class ImportStore(context: Context, databaseName: String = "bank_imports.db") :
-    SQLiteOpenHelper(context, databaseName, null, 2) {
+    SQLiteOpenHelper(context, databaseName, null, 3) {
     private val updates = MutableStateFlow(0L)
     val changes = updates.asStateFlow()
     private val reconciliations = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
@@ -64,11 +65,12 @@ internal class ImportStore(context: Context, databaseName: String = "bank_import
             """.trimIndent()
         )
         createMovements(db)
+        createBankReviews(db)
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        if (oldVersion == 1 && newVersion == 2) createMovements(db)
-        else error("Migração ausente de $oldVersion para $newVersion")
+        if (oldVersion < 2) createMovements(db)
+        if (oldVersion < 3) createBankReviews(db)
     }
 
     private fun createMovements(db: SQLiteDatabase) {
@@ -100,6 +102,14 @@ internal class ImportStore(context: Context, databaseName: String = "bank_import
     }
 
     fun record(scope: String, movement: BankMovement): Boolean {
+        val inserted = insertMovement(writableDatabase, scope, movement, null, CategorySource.UNSET)
+        if (inserted) updates.update { it + 1 }
+        return inserted
+    }
+
+    private fun insertMovement(
+        db: SQLiteDatabase, scope: String, movement: BankMovement, categoryId: Int?, source: CategorySource
+    ): Boolean {
         val values = ContentValues().apply {
             put("scope", scope)
             put("id", movement.importId)
@@ -110,12 +120,167 @@ internal class ImportStore(context: Context, databaseName: String = "bank_import
             put("description", movement.description)
             put("occurred_at", movement.occurredAt.toEpochMilli())
             put("date_source", movement.dateSource.name)
+            put("category_id", categoryId)
+            put("category_source", if (categoryId == null) CategorySource.UNSET.name else source.name)
+            put("category_pending", categoryId != null)
+            put("classified", source != CategorySource.UNSET)
         }
-        val inserted = writableDatabase.insertWithOnConflict(
+        return db.insertWithOnConflict(
             "bank_movement", null, values, SQLiteDatabase.CONFLICT_IGNORE
         ) != -1L
-        if (inserted) updates.update { it + 1 }
-        return inserted
+    }
+
+    private fun createBankReviews(db: SQLiteDatabase) {
+        db.execSQL(
+            """
+            CREATE TABLE bank_alert (
+                scope TEXT NOT NULL,
+                id TEXT NOT NULL,
+                state TEXT NOT NULL,
+                revision INTEGER NOT NULL DEFAULT 0,
+                bank TEXT,
+                posted_at INTEGER,
+                occurred_at INTEGER,
+                cents INTEGER,
+                direction TEXT,
+                method TEXT,
+                reason TEXT,
+                category_id INTEGER,
+                income_import_id TEXT,
+                expense_import_id TEXT,
+                PRIMARY KEY (scope, id),
+                UNIQUE (id)
+            )
+            """.trimIndent()
+        )
+    }
+
+    fun addBankReview(scope: String, review: BankReview): Boolean = saveBankReview(scope, review, false) != null
+
+    fun saveBankReview(scope: String, review: BankReview, replacePending: Boolean = true): Long? {
+        val values = ContentValues().apply {
+            put("scope", scope)
+            put("id", review.id)
+            put("state", "pending")
+            put("bank", review.bank.name)
+            put("posted_at", review.postedAt.toEpochMilli())
+            put("occurred_at", review.occurredAt?.toEpochMilli())
+            put("cents", review.cents)
+            put("direction", review.direction?.name)
+            put("method", review.method?.name)
+            put("reason", review.reason.name)
+            putNull("category_id")
+            put("income_import_id", review.incomeImportId)
+            put("expense_import_id", review.expenseImportId)
+        }
+        val currentRevision = writableDatabase.transaction {
+            val inserted = insertWithOnConflict("bank_alert", null, values, SQLiteDatabase.CONFLICT_IGNORE) != -1L
+            if (inserted) return@transaction 0L
+            if (!replacePending) return@transaction null
+            val previous = rawQuery(
+                "SELECT revision FROM bank_alert WHERE scope = ? AND id = ? AND state = 'pending'",
+                arrayOf(scope, review.id)
+            ).use { if (it.moveToFirst()) it.getLong(0) else null } ?: return@transaction null
+            values.put("revision", previous + 1)
+            updatePendingReview(this, scope, review.id, values)
+            previous + 1
+        }
+        if (currentRevision != null) updates.update { it + 1 }
+        return currentRevision
+    }
+
+    fun bankReviews(scope: String): List<BankReview> = readBankReviews(readableDatabase, scope, null)
+
+    private fun readBankReviews(db: SQLiteDatabase, scope: String, id: String?): List<BankReview> {
+        val byId = if (id == null) "" else " AND id = ?"
+        return db.rawQuery(
+            "SELECT id, bank, posted_at, occurred_at, cents, direction, method, reason, category_id, " +
+                "income_import_id, expense_import_id FROM bank_alert " +
+                "WHERE scope = ? AND state = 'pending'$byId ORDER BY posted_at DESC, id",
+            if (id == null) arrayOf(scope) else arrayOf(scope, id)
+        ).use { rows ->
+            buildList {
+                while (rows.moveToNext()) add(BankReview(
+                    rows.getString(0), Bank.valueOf(rows.getString(1)), Instant.ofEpochMilli(rows.getLong(2)),
+                    if (rows.isNull(3)) null else Instant.ofEpochMilli(rows.getLong(3)),
+                    if (rows.isNull(4)) null else rows.getLong(4),
+                    rows.getString(5)?.let(Direction::valueOf), rows.getString(6)?.let(PaymentMethod::valueOf),
+                    ReviewReason.valueOf(rows.getString(7)), if (rows.isNull(8)) null else rows.getInt(8),
+                    rows.getString(9), rows.getString(10)
+                ))
+            }
+        }
+    }
+
+    fun updateBankReview(scope: String, id: String, revision: Long, reason: ReviewReason, categoryId: Int?) {
+        val values = ContentValues().apply {
+            put("reason", reason.name)
+            put("category_id", categoryId)
+        }
+        if (updatePendingReview(writableDatabase, scope, id, values, revision)) updates.update { it + 1 }
+    }
+
+    fun discardBankReview(scope: String, id: String): Boolean {
+        val discarded = updatePendingReview(writableDatabase, scope, id, closedReview("discarded"))
+        if (discarded) updates.update { it + 1 }
+        return discarded
+    }
+
+    fun recordCaptured(
+        scope: String, id: String, movement: BankMovement, categoryId: Int? = null, revision: Long? = null
+    ): Boolean {
+        val recorded = writableDatabase.transaction {
+            finishBankReview(this, scope, id, movement, categoryId,
+                if (revision == null && categoryId == null) CategorySource.UNSET else CategorySource.MODEL, revision)
+        }
+        if (recorded) updates.update { it + 1 }
+        return recorded
+    }
+
+    fun confirmBankReview(
+        scope: String, id: String, cents: Long, direction: Direction, method: PaymentMethod, categoryId: Int?
+    ): Boolean {
+        if (cents !in 1..999_999_999_999L) return false
+        val recorded = writableDatabase.transaction {
+            val review = readBankReviews(this, scope, id).singleOrNull() ?: return@transaction false
+            val movement = reviewMovement(review, cents, direction, method)
+            finishBankReview(this, scope, id, movement, categoryId, CategorySource.MANUAL)
+        }
+        if (recorded) updates.update { it + 1 }
+        return recorded
+    }
+
+    private fun finishBankReview(
+        db: SQLiteDatabase, scope: String, id: String, movement: BankMovement, categoryId: Int?, source: CategorySource,
+        revision: Long? = null
+    ): Boolean {
+        if (!updatePendingReview(db, scope, id, closedReview("recorded"), revision)) {
+            if (revision != null) return false
+            val values = ContentValues().apply {
+                put("scope", scope)
+                put("id", id)
+                put("state", "recorded")
+            }
+            if (db.insertWithOnConflict("bank_alert", null, values, SQLiteDatabase.CONFLICT_IGNORE) == -1L) {
+                return false
+            }
+        }
+        insertMovement(db, scope, movement, categoryId, source)
+        return true
+    }
+
+    private fun updatePendingReview(
+        db: SQLiteDatabase, scope: String, id: String, values: ContentValues, revision: Long? = null
+    ): Boolean {
+        val where = "scope = ? AND id = ? AND state = 'pending'"
+        return if (revision == null) db.update("bank_alert", values, where, arrayOf(scope, id)) == 1
+        else db.update("bank_alert", values, "$where AND revision = ?", arrayOf(scope, id, revision.toString())) == 1
+    }
+
+    private fun closedReview(state: String) = ContentValues().apply {
+        put("state", state)
+        listOf("bank", "posted_at", "occurred_at", "cents", "direction", "method", "reason", "category_id",
+            "income_import_id", "expense_import_id").forEach(::putNull)
     }
 
     fun localImports(scope: String): List<LocalImport> = readableDatabase.rawQuery(

@@ -62,4 +62,62 @@ class ImportStoreTest {
             assertTrue(kept.categoryPending)
         }
     }
+
+    @Test fun persistedReviewCanBeConfirmedOfflineOnlyOnce() {
+        ImportStore(context, databaseName).use { store ->
+            assertTrue(store.addBankReview(scope, review()))
+            assertFalse(store.addBankReview(scope, review()))
+            assertFalse(store.addBankReview("another", review()))
+            assertTrue(store.localImports(scope).isEmpty())
+        }
+        ImportStore(context, databaseName).use { store ->
+            val pending = store.bankReviews(scope).single()
+            assertEquals(ReviewReason.INTERRUPTED, pending.reason)
+            assertTrue(store.bankReviews("another").isEmpty())
+            assertFalse(store.confirmBankReview("another", pending.id, 1, Direction.INCOME, PaymentMethod.PIX, null))
+            assertTrue(store.confirmBankReview(scope, pending.id, 1, Direction.INCOME, PaymentMethod.PIX, null))
+            assertFalse(store.confirmBankReview(scope, pending.id, 1, Direction.INCOME, PaymentMethod.PIX, null))
+            assertTrue(store.bankReviews(scope).isEmpty())
+            val transaction = store.localImports(scope).single()
+            assertEquals(Direction.INCOME, transaction.movement.direction)
+            assertEquals(1L, transaction.movement.cents)
+            assertTrue(transaction.classified)
+            assertFalse(transaction.sent)
+        }
+    }
+
+    @Test fun parserUpdatePromotesReviewAndDiscardPreventsLateInference() {
+        ImportStore(context, databaseName).use { store ->
+            assertTrue(store.addBankReview(scope, review()))
+            assertTrue(store.recordCaptured(scope, "alert-1", entry))
+            assertFalse(store.recordCaptured(scope, "alert-1", entry.copy(importId = "other")))
+            val discarded = review().copy(id = "alert-2")
+            assertTrue(store.addBankReview(scope, discarded))
+            assertTrue(store.discardBankReview(scope, discarded.id))
+            assertFalse(store.recordCaptured(scope, discarded.id, entry.copy(importId = "late")))
+            assertFalse(store.addBankReview(scope, discarded))
+            assertTrue(store.bankReviews(scope).isEmpty())
+            assertEquals(entry, store.localImports(scope).single().movement)
+        }
+    }
+
+    @Test fun refreshedAlertRejectsAProposalFromAnEarlierRevision() {
+        ImportStore(context, databaseName).use { store ->
+            val first = requireNotNull(store.saveBankReview(scope, review()))
+            val latest = requireNotNull(store.saveBankReview(scope, review().copy(cents = 25)))
+            assertFalse(store.recordCaptured(scope, "alert-1", entry, revision = first))
+            store.updateBankReview(scope, "alert-1", first, ReviewReason.MODEL_UNAVAILABLE, null)
+            assertEquals(25L, store.bankReviews(scope).single().cents)
+            assertEquals(ReviewReason.INTERRUPTED, store.bankReviews(scope).single().reason)
+            assertTrue(store.recordCaptured(scope, "alert-1", entry.copy(cents = 25), revision = latest))
+            val movement = store.localImports(scope).single()
+            assertEquals(25L, movement.movement.cents)
+            assertTrue(movement.classified)
+            assertNull(movement.categoryId)
+        }
+    }
+
+    private fun review() = BankReview(
+        "alert-1", Bank.NUBANK, entry.occurredAt, null, null, null, null, ReviewReason.INTERRUPTED
+    )
 }

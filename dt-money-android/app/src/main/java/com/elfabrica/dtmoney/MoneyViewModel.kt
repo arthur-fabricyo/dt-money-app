@@ -27,6 +27,7 @@ internal data class AppState(
     val filters: Filters = Filters(),
     val transactions: TransactionPage? = null,
     val drafts: List<PurchaseDraft> = emptyList(),
+    val bankReviews: List<BankReview> = emptyList(),
     val bankPackage: String = "",
     val enabledBanks: Set<Bank> = emptySet(),
     val functionGemmaInstalled: Boolean = false
@@ -42,8 +43,9 @@ internal class MoneyViewModel(application: Application) : AndroidViewModel(appli
 
     init {
         viewModelScope.launch {
-            store.changes.collect {
-                val session = state.value.session ?: return@collect
+            store.changes.collectLatest {
+                val session = state.value.session ?: return@collectLatest
+                loadDrafts(session)
                 showLocalDashboard(session)
             }
         }
@@ -172,6 +174,29 @@ internal class MoneyViewModel(application: Application) : AndroidViewModel(appli
         loadDrafts(session)
     }
 
+    fun discardBankReview(review: BankReview) = perform {
+        val session = state.value.session ?: return@perform
+        withContext(Dispatchers.IO) { store.discardBankReview(settings.scope(session), review.id) }
+        loadDrafts(session)
+    }
+
+    fun confirmBankReview(
+        review: BankReview, cents: Long, direction: Direction, method: PaymentMethod, categoryId: Int?, close: () -> Unit
+    ) = perform {
+        val current = state.value
+        val session = current.session ?: return@perform
+        val scope = settings.scope(session)
+        val validCategory = categoryId?.takeIf { id -> current.categories.any { it.id == id && it.name != UNCATEGORIZED } }
+        val saved = withContext(Dispatchers.IO) {
+            store.confirmBankReview(scope, review.id, cents, direction, method, validCategory)
+        }
+        if (saved) BankImportWorker.schedule(context, scope)
+        close()
+        loadDrafts(session)
+        showLocalDashboard(session)
+        message(if (saved) "Transação salva." else "Esta captura já foi resolvida.")
+    }
+
     fun reopen(draft: PurchaseDraft) = perform {
         val session = state.value.session ?: return@perform
         withContext(Dispatchers.IO) {
@@ -279,10 +304,11 @@ internal class MoneyViewModel(application: Application) : AndroidViewModel(appli
 
     private suspend fun loadDrafts(session: Session) {
         val scope = settings.scope(session)
-        val drafts = withContext(Dispatchers.IO) { store.pending(scope) }
+        val (drafts, bankReviews) = withContext(Dispatchers.IO) { store.pending(scope) to store.bankReviews(scope) }
         mutableState.update {
             if (it.session == session) it.copy(
                 drafts = drafts,
+                bankReviews = bankReviews,
                 bankPackage = settings.bank(scope),
                 enabledBanks = settings.captureConfig()?.enabledSince?.keys.orEmpty(),
                 functionGemmaInstalled = FunctionGemmaClassifier.installed(context)

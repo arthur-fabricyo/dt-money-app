@@ -74,10 +74,16 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        bankModelForeground = true
         val component = ComponentName(this, BankNotificationService::class.java)
         notificationAccess = getSystemService(NotificationManager::class.java)
             .isNotificationListenerAccessGranted(component)
         if (model.state.value.session != null) model.refresh()
+    }
+
+    override fun onPause() {
+        bankModelForeground = false
+        super.onPause()
     }
 }
 
@@ -123,6 +129,7 @@ private fun Dashboard(state: AppState, model: MoneyViewModel, access: Boolean, o
     var categorizing by remember { mutableStateOf<Transaction?>(null) }
     var deleting by remember { mutableStateOf<Transaction?>(null) }
     var reopening by remember { mutableStateOf<PurchaseDraft?>(null) }
+    var reviewing by remember { mutableStateOf<String?>(null) }
     val active = !state.busy
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -135,7 +142,7 @@ private fun Dashboard(state: AppState, model: MoneyViewModel, access: Boolean, o
             Row {
                 TextButton(onClick = { inbox = false }, enabled = inbox) { Text("Transações") }
                 TextButton(onClick = { inbox = true; model.refreshDrafts() }, enabled = !inbox && active) {
-                    Text("Capturas (${state.drafts.size})")
+                    Text("Capturas (${state.drafts.size + state.bankReviews.size})")
                 }
                 TextButton(onClick = model::signOut, enabled = active) { Text("Sair") }
             }
@@ -145,7 +152,10 @@ private fun Dashboard(state: AppState, model: MoneyViewModel, access: Boolean, o
                 CaptureSettings(state, access, model::saveBank, model::setBankEnabled, model::installFunctionGemma, openSettings)
             }
             item { TextButton(onClick = model::refreshDrafts, enabled = active) { Text("Atualizar capturas") } }
-            if (state.drafts.isEmpty()) item { Text("Nenhuma compra para revisar.") }
+            if (state.drafts.isEmpty() && state.bankReviews.isEmpty()) item { Text("Nenhuma captura para revisar.") }
+            items(state.bankReviews, key = { "bank-${it.id}" }) { review ->
+                BankReviewCard(review, active, review = { reviewing = review.id }, discard = { model.discardBankReview(review) })
+            }
             items(state.drafts, key = { it.id }) { draft ->
                 Card(Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(16.dp)) {
@@ -239,6 +249,13 @@ private fun Dashboard(state: AppState, model: MoneyViewModel, access: Boolean, o
     target?.let { editor ->
         EditTransaction(editor, state.categories, state.busy, state.message, close = { target = null }) { input ->
             model.save(input, editor.transaction?.id, editor.draft) { target = null }
+        }
+    }
+    state.bankReviews.firstOrNull { it.id == reviewing }?.let { review ->
+        key(review.id) {
+            BankReviewDialog(review, state.categories, state.busy, close = { reviewing = null }) { cents, direction, method, category ->
+                model.confirmBankReview(review, cents, direction, method, category) { reviewing = null }
+            }
         }
     }
     if (showFilters) FilterDialog(state.filters, state.categories, close = { showFilters = false }) {
@@ -406,7 +423,7 @@ private fun PickDate(label: String, selected: LocalDate?, choose: (LocalDate?) -
 }
 
 @Composable
-private fun Choice(label: String, selected: Int?, options: List<Pair<Int, String>>, choose: (Int) -> Unit) {
+internal fun Choice(label: String, selected: Int?, options: List<Pair<Int, String>>, choose: (Int) -> Unit) {
     var expanded by remember { mutableStateOf(false) }
     Box {
         OutlinedButton(onClick = { expanded = true }) {
@@ -421,13 +438,13 @@ private fun Choice(label: String, selected: Int?, options: List<Pair<Int, String
 }
 
 @Composable
-private fun Field(value: String, change: (String) -> Unit, label: String, keyboard: KeyboardType = KeyboardType.Text) {
+internal fun Field(value: String, change: (String) -> Unit, label: String, keyboard: KeyboardType = KeyboardType.Text) {
     OutlinedTextField(value, change, Modifier.fillMaxWidth(), label = { Text(label) }, singleLine = true,
         keyboardOptions = KeyboardOptions(keyboardType = keyboard))
 }
 
-private fun money(cents: Long): String =
+internal fun money(cents: Long): String =
     NumberFormat.getCurrencyInstance(Locale.forLanguageTag("pt-BR")).format(BigDecimal.valueOf(cents, 2))
 
-private fun date(instant: Instant): String =
+internal fun date(instant: Instant): String =
     DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm").withZone(ZoneId.systemDefault()).format(instant)
