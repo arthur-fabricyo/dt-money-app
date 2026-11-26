@@ -74,6 +74,12 @@ export const configure = (fastify: FastifyInstance) => {
     )
     .prop("createdAt", S.string())
     .prop("updatedAt", S.string())
+    .prop("importId", S.oneOf([S.string(), S.null()]))
+    .prop("occurredAt", S.oneOf([S.string(), S.null()]))
+    .prop("bank", S.oneOf([S.string(), S.null()]))
+    .prop("method", S.oneOf([S.string(), S.null()]))
+    .prop("dateSource", S.oneOf([S.string(), S.null()]))
+    .prop("categorySource", S.oneOf([S.string(), S.null()]))
     .prop("deletedAt", S.oneOf([S.string().format("date-time"), S.null()]));
 
   const orderDirection = S.string()

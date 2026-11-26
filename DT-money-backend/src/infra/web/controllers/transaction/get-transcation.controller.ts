@@ -13,6 +13,8 @@ interface Request {
     searchText?: string;
     categoryIds?: number[];
     typeId?: number;
+    dateBasis?: "movement";
+    probeImportIds?: string[];
   };
 }
 
@@ -33,6 +35,8 @@ export class GetTransactionController {
       searchText,
       categoryIds,
       typeId,
+      dateBasis,
+      probeImportIds,
     } = request.query;
     const userId = request.user.id;
     const params: GetTransactionsParams = {
@@ -47,6 +51,8 @@ export class GetTransactionController {
       },
       userId,
       searchText: searchText ?? undefined,
+      dateBasis,
+      probeImportIds,
     };
 
     if (page && perPage) {

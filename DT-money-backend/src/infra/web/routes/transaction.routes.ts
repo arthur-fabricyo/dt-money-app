@@ -1,4 +1,6 @@
 import { FastifyInstance } from "fastify";
+import S from "fluent-json-schema";
+import { TransactionRepository } from "../../database/typeorm/dt-money/repositories/transaction.repository";
 import { CreateTransactionController } from "../controllers/transaction/create-transcation.controller";
 import { CheckAuthtenticationMiddleware } from "../middlewares/check-authentication";
 import { createTransactionSchema } from "./schemas/transactions/create-transaction";
@@ -18,6 +20,28 @@ export const configure = (fastify: FastifyInstance) => {
   const getTransaction = new GetTransactionController();
   const getTransactionData = new GetTransactionData();
   const checkAuthenticated = new CheckAuthtenticationMiddleware();
+
+  fastify.patch<{
+    Params: { importId: string };
+    Body: { categoryId: number; source: "model" | "manual" };
+  }>("/transaction/imports/:importId/category", {
+    preHandler: [checkAuthenticated.execute],
+    schema: {
+      params: S.object().prop("importId", S.string().pattern("^[a-f0-9]{64}$").required()),
+      body: S.object()
+        .prop("categoryId", S.integer().minimum(1).required())
+        .prop("source", S.string().enum(["model", "manual"]).required()),
+      response: { 200: S.ref("Transaction#") },
+    },
+  }, async (request, reply) => {
+    const repository = new TransactionRepository();
+    const { categoryId, source } = request.body;
+    const transaction = await repository.updateImportCategory(
+      request.user.id, request.params.importId, categoryId, source
+    );
+    if (!transaction) return reply.code(422).send({ message: "Importação ou categoria inválida." });
+    return reply.send(transaction);
+  });
 
   fastify.route({
     url: "/transaction/categories",

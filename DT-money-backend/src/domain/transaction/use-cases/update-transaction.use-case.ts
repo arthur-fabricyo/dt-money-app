@@ -21,7 +21,7 @@ export class UpdateTransactionUseCase {
   async execute(params: UpdateTransactionUseCaseParams): Promise<void> {
     const transaction = await this.transactionRepository.findById(params.id);
 
-    if (!transaction) {
+    if (!transaction || transaction.userId !== params.userId) {
       throw new NotFoundError("Transação não encontrada");
     }
 
