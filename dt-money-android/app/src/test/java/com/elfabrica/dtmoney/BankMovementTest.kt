@@ -10,6 +10,27 @@ class BankMovementTest {
     private fun alert(bank: Bank, text: String, key: String = "a", title: String = "") =
         BankAlert(bank, title, text, key, posted, posted)
 
+    @Test fun recognizesTheSantanderPixNotificationsSeenOnDevice() {
+        val incoming = "PIX recebido em 26/11/2026 as 11:34 no valor de R$\n0,01."
+        val outgoing = "PIX enviado em 26/11/2026 as 11:27 no valor de R$ 0,01."
+        val received = parseBankMovement(alert(Bank.SANTANDER, incoming, title = "Você acaba de receber um PIX!"))
+        val sent = parseBankMovement(alert(Bank.SANTANDER, outgoing, title = "Seu PIX foi enviado!"))
+
+        assertEquals(Direction.INCOME, received?.direction)
+        assertEquals(Direction.EXPENSE, sent?.direction)
+        assertEquals(1L, received?.cents)
+        assertEquals(1L, sent?.cents)
+        assertEquals(PaymentMethod.PIX, received?.method)
+        assertEquals(PaymentMethod.PIX, sent?.method)
+        assertEquals(Instant.parse("2026-11-26T14:34:00Z"), received?.occurredAt)
+        assertEquals(Instant.parse("2026-11-26T14:27:00Z"), sent?.occurredAt)
+        assertEquals(DateSource.ALERT, received?.dateSource)
+        assertEquals(DateSource.ALERT, sent?.dateSource)
+        assertNotEquals(received?.importId, sent?.importId)
+        assertNull(parseBankMovement(alert(Bank.NUBANK, incoming)))
+        assertNull(parseBankMovement(alert(Bank.SANTANDER, outgoing, title = "Pix cancelado")))
+    }
+
     @Test fun recognizesCompletedPixAndCardMovements() {
         val received = parseBankMovement(alert(Bank.NUBANK, "Você recebeu um Pix de R$ 1.234,56 de Maria"))
         assertEquals(Direction.INCOME, received?.direction)

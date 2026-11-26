@@ -47,6 +47,11 @@ private val sentPix = Regex(
     """(?:Pix enviado|Voc[eê] enviou (?:um )?Pix)(?: de|:)?\s+""" + amount + """(?:\s+para\s+(.+))?""",
     RegexOption.IGNORE_CASE
 )
+private val santanderPix = Regex(
+    """Pix (recebido|enviado) em (\d{2}/\d{2}/\d{4}) [aà]s (\d{2}:\d{2}) no valor de """ +
+        amount + """\.?""",
+    RegexOption.IGNORE_CASE
+)
 private val card = Regex(
     """Compra aprovada(?: (?:no|com cartão de) (cr[eé]dito|d[eé]bito))?(?: de|:)?\s+""" +
         amount + """(?:\s+em\s+(.+))?""",
@@ -67,8 +72,16 @@ internal fun parseBankMovement(alert: BankAlert): BankMovement? {
     val body = normalizeBankText(alert.body)
     val title = normalizeBankText(alert.title).trimEnd(':')
     if (incompatibleStatus.containsMatchIn(title) || incompatibleStatus.containsMatchIn(body)) return null
+    if (alert.bank == Bank.SANTANDER) parseSantanderPix(alert, body)?.let { return it }
     return parseMovementText(alert, body)
         ?: parseMovementText(alert, if (title.isEmpty()) body else "$title: $body")
+}
+
+private fun parseSantanderPix(alert: BankAlert, text: String): BankMovement? {
+    val (status, day, time, reais, centavos) = santanderPix.matchEntire(text)?.destructured ?: return null
+    val direction = if (status.equals("recebido", ignoreCase = true)) Direction.INCOME else Direction.EXPENSE
+    val cents = parseCentavos(reais, centavos) ?: return null
+    return buildMovement(alert, direction, PaymentMethod.PIX, cents, "", parseAlertDate("$day $time", alert.postedAt), null)
 }
 
 private fun parseMovementText(alert: BankAlert, text: String): BankMovement? {
@@ -86,22 +99,35 @@ private fun parseMovementText(alert: BankAlert, text: String): BankMovement? {
         else -> PaymentMethod.UNKNOWN
     }
     val offset = if (purchase == null) 0 else 1
-    val cents = (match.groupValues[1 + offset].replace(".", "") + match.groupValues[2 + offset])
-        .toLongOrNull()?.takeIf { it in 1..999_999_999_999L } ?: return null
+    val cents = parseCentavos(match.groupValues[1 + offset], match.groupValues[2 + offset]) ?: return null
+    val datePart = parts.drop(1).singleOrNull { it.startsWith("Data:", ignoreCase = true) }
+    val date = datePart?.let { parseAlertDate(it.substringAfter(':').trim(), alert.postedAt) }
+    val bankReference = parts.drop(1).mapNotNull { reference.matchEntire(it)?.groupValues?.get(1) }
+        .singleOrNull()?.uppercase(Locale.ROOT)
+    return buildMovement(alert, direction, method, cents, match.groupValues[3 + offset], date, bankReference)
+}
+
+private fun parseCentavos(reais: String, centavos: String): Long? =
+    (reais.replace(".", "") + centavos).toLongOrNull()?.takeIf { it in 1..999_999_999_999L }
+
+private fun parseAlertDate(text: String, postedAt: Instant): Instant? = runCatching {
+    LocalDateTime.parse(text, alertDate).atZone(ZoneId.of("America/Sao_Paulo")).toInstant()
+}.getOrNull()?.takeUnless { it.isAfter(postedAt.plusSeconds(300)) }
+
+private fun buildMovement(
+    alert: BankAlert,
+    direction: Direction,
+    method: PaymentMethod,
+    cents: Long,
+    counterparty: String,
+    date: Instant?,
+    bankReference: String?
+): BankMovement {
     val fallback = if (method == PaymentMethod.PIX) {
         if (direction == Direction.INCOME) "Pix recebido" else "Pix enviado"
     } else "Compra aprovada"
-    val description = sensitiveDescription.replace(match.groupValues[3 + offset], "").trim()
+    val description = sensitiveDescription.replace(counterparty, "").trim()
         .take(120).ifBlank { "$fallback · " + alert.bank.appName }
-    val datePart = parts.drop(1).singleOrNull { it.startsWith("Data:", ignoreCase = true) }
-    val date = datePart?.let {
-        runCatching {
-            LocalDateTime.parse(it.substringAfter(':').trim(), alertDate)
-                .atZone(ZoneId.of("America/Sao_Paulo")).toInstant()
-        }.getOrNull()?.takeUnless { it.isAfter(alert.postedAt.plusSeconds(300)) }
-    }
-    val bankReference = parts.drop(1).mapNotNull { reference.matchEntire(it)?.groupValues?.get(1) }
-        .singleOrNull()?.uppercase(Locale.ROOT)
     val eventIdentity = if (bankReference != null) "bank:$bankReference" else
         "android:" + listOf(alert.notificationKey, alert.eventTime ?: alert.postedAt, method, cents, description)
             .joinToString("|")
