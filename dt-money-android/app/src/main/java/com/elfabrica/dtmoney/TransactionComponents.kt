@@ -9,6 +9,8 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.absoluteOffset
@@ -19,6 +21,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.DropdownMenu
@@ -62,29 +65,29 @@ import java.time.format.DateTimeFormatter
 import java.util.Locale
 import kotlin.math.roundToInt
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
-internal fun DashboardHeader(active: Boolean, canCreate: Boolean, onNew: () -> Unit, onSignOut: () -> Unit) {
-    Row(
-        modifier = Modifier.fillMaxWidth().background(DtColors.Base).padding(horizontal = 32.dp, vertical = 24.dp),
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-        verticalAlignment = Alignment.Top
+internal fun DashboardHeader(active: Boolean, canCreate: Boolean, onNew: () -> Unit, onSettings: () -> Unit) {
+    FlowRow(
+        modifier = Modifier.fillMaxWidth().background(DtColors.Base).padding(horizontal = 24.dp, vertical = 20.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        Column(Modifier.weight(1f)) {
+        Column(Modifier.padding(end = 12.dp)) {
             DtLogo(Modifier.width(130.dp).height(30.dp))
             Row(
-                modifier = Modifier.clickable(enabled = active, role = Role.Button, onClick = onSignOut)
+                modifier = Modifier.clickable(role = Role.Button, onClick = onSettings)
                     .heightIn(min = 48.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                val color = if (active) DtColors.Muted else DtColors.Muted.copy(alpha = 0.65f)
-                DashboardGlyph(Glyph.SignOut, color, Modifier.size(16.dp))
-                Text("Sair da conta", color = color, style = MaterialTheme.typography.bodyMedium)
+                DashboardGlyph(Glyph.Settings, DtColors.Green, Modifier.size(18.dp))
+                Text("Configurações", color = DtColors.Text, style = MaterialTheme.typography.bodyMedium)
             }
         }
         DtButton(
             onClick = onNew,
-            modifier = Modifier.weight(1f, fill = false).width(130.dp).heightIn(min = 50.dp),
+            modifier = Modifier.widthIn(min = 130.dp),
             enabled = active && canCreate
         ) {
             Text("Nova transação", fontWeight = FontWeight.Bold)
@@ -373,7 +376,7 @@ private fun filterPeriod(filters: Filters): String {
     }
 }
 
-private enum class Glyph { SignOut, Down, Up, Money, Filter, Refresh, More, Label, Calendar, Edit, Delete }
+private enum class Glyph { Settings, Down, Up, Money, Filter, Refresh, More, Label, Calendar, Edit, Delete }
 
 @Composable
 private fun DashboardGlyph(glyph: Glyph, color: Color, modifier: Modifier) {
@@ -389,10 +392,13 @@ private fun DashboardGlyph(glyph: Glyph, color: Color, modifier: Modifier) {
                 drawPath(path, color, style = stroke)
             }
             when (glyph) {
-                Glyph.SignOut -> {
-                    line(10f, 4f, 4f, 4f, 4f, 20f, 10f, 20f)
-                    line(9f, 12f, 20f, 12f, 16f, 8f)
-                    line(20f, 12f, 16f, 16f)
+                Glyph.Settings -> {
+                    line(3f, 6f, 21f, 6f)
+                    line(3f, 12f, 21f, 12f)
+                    line(3f, 18f, 21f, 18f)
+                    line(8f, 3f, 8f, 9f)
+                    line(16f, 9f, 16f, 15f)
+                    line(10f, 15f, 10f, 21f)
                 }
                 Glyph.Down, Glyph.Up -> {
                     drawCircle(color, radius = 9f, center = Offset(12f, 12f), style = stroke)

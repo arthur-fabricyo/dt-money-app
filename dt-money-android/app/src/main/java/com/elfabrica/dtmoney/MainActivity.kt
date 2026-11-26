@@ -8,6 +8,7 @@ import android.os.Bundle
 import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.setContent
@@ -107,6 +108,7 @@ private data class EditTarget(val transaction: Transaction? = null, val draft: P
 @Composable
 private fun Dashboard(state: AppState, model: MoneyViewModel, access: Boolean, openSettings: () -> Unit) {
     var inbox by rememberSaveable { mutableStateOf(false) }
+    var settingsOpen by rememberSaveable { mutableStateOf(false) }
     var showFilters by rememberSaveable { mutableStateOf(false) }
     var target by remember { mutableStateOf<EditTarget?>(null) }
     var categorizing by remember { mutableStateOf<Transaction?>(null) }
@@ -118,12 +120,16 @@ private fun Dashboard(state: AppState, model: MoneyViewModel, access: Boolean, o
     val canEdit = active && state.categories.isNotEmpty()
     val inset = Modifier.padding(horizontal = 20.dp)
     val focusManager = LocalFocusManager.current
-    val canSearch = active && !inbox && !showFilters && target == null && categorizing == null && deleting == null
+    val canSearch = active && !inbox && !settingsOpen && !showFilters && target == null && categorizing == null && deleting == null
     LaunchedEffect(search, canSearch, state.filters) {
         if (canSearch && search != state.filters.search) {
             delay(500)
             model.filter(state.filters.copy(search = search))
         }
+    }
+    if (settingsOpen) {
+        SettingsScreen(state, model, access, openSettings, onBack = { settingsOpen = false })
+        return
     }
     LazyColumn(
         modifier = Modifier.fillMaxSize().imePadding(),
@@ -131,7 +137,10 @@ private fun Dashboard(state: AppState, model: MoneyViewModel, access: Boolean, o
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         item {
-            DashboardHeader(active, canEdit, onNew = { target = EditTarget() }, onSignOut = model::signOut)
+            DashboardHeader(active, canEdit, onNew = { target = EditTarget() }, onSettings = {
+                focusManager.clearFocus()
+                settingsOpen = true
+            })
         }
         item {
             SecondaryTabRow(selectedTabIndex = if (inbox) 1 else 0, modifier = inset,
@@ -142,11 +151,6 @@ private fun Dashboard(state: AppState, model: MoneyViewModel, access: Boolean, o
             }
         }
         if (inbox) {
-            item {
-                Box(inset) {
-                    CaptureSettings(state, access, model::saveBank, model::setBankEnabled, model::installFunctionGemma, openSettings)
-                }
-            }
             item { TextButton(onClick = model::refreshDrafts, modifier = inset, enabled = active) { Text("Atualizar capturas") } }
             if (state.drafts.isEmpty() && state.bankReviews.isEmpty()) item { EmptyMessage("Nenhuma captura para revisar.") }
             items(state.bankReviews, key = { "bank-${it.id}" }) { review ->
@@ -260,6 +264,41 @@ private fun Dashboard(state: AppState, model: MoneyViewModel, access: Boolean, o
             },
             dismissButton = { TextButton(onClick = { reopening = null }) { Text("Cancelar") } }
         )
+    }
+}
+
+@Composable
+private fun SettingsScreen(state: AppState, model: MoneyViewModel, access: Boolean, openSettings: () -> Unit, onBack: () -> Unit) {
+    var tab by rememberSaveable { mutableIntStateOf(0) }
+    BackHandler(onBack = onBack)
+    Column(Modifier.fillMaxSize().imePadding()) {
+        Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically) {
+            Text("Configurações", Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
+            TextButton(onClick = onBack) { Text("Voltar") }
+        }
+        SecondaryTabRow(selectedTabIndex = tab, containerColor = DtColors.Secondary, contentColor = DtColors.Green) {
+            Tab(selected = tab == 0, onClick = { tab = 0 }, text = { Text("Capturas") })
+            Tab(selected = tab == 1, onClick = { tab = 1 }, text = { Text("Sair") })
+        }
+        LazyColumn(contentPadding = PaddingValues(20.dp)) {
+            if (tab == 0) {
+                item {
+                    CaptureSettings(state, access, model::saveBank, model::setBankEnabled, model::installFunctionGemma, openSettings)
+                }
+            } else {
+                item {
+                    DtCard(Modifier.fillMaxWidth()) {
+                        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                            Text("Sessão", style = MaterialTheme.typography.titleMedium)
+                            DtButton(model::signOut, Modifier.fillMaxWidth(), enabled = !state.busy, outlined = true) {
+                                Text("Sair da conta")
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 

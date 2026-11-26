@@ -31,7 +31,7 @@ Use o APK debug para testar com HTTP. A versão de produção exige HTTPS.
 ## Lançamentos automáticos no APK de desenvolvimento
 
 1. Confirme que aplicou as migrations do backend. A migration de importações adiciona unicidade por usuário e a categoria **Sem categoria**.
-2. Entre no app e abra **Capturas**. Em **Configurações do Android**, conceda acesso a notificações ao DT Money. Ative Nubank e Santander individualmente.
+2. Entre no app e abra **Configurações → Capturas**. Em **Configurações do Android**, conceda acesso a notificações ao DT Money. Ative Nubank e Santander individualmente.
 3. Para usar FunctionGemma 270M, toque em **Instalar FunctionGemma local** e selecione um modelo `.litertlm` que tenha suporte a chamadas de função. O binário fica no aparelho. A documentação do Google descreve a preparação e a exportação do modelo. [FunctionGemma e LiteRT-LM](https://ai.google.dev/gemma/docs/mobile-actions)
 4. Abra **Transações** para ver os lançamentos. Use **Alterar categoria** para corrigir uma sugestão ou categorizar manualmente um item.
 
