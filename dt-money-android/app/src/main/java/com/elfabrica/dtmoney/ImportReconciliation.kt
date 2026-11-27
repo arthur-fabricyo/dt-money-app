@@ -58,7 +58,7 @@ internal fun reconcileImports(
     )
 }
 
-private fun Transaction.matches(filters: Filters): Boolean {
+internal fun Transaction.matches(filters: Filters): Boolean {
     val occurred = movementTime()
     if (filters.from?.let(Instant::parse)?.let(occurred::isBefore) == true) return false
     if (filters.to?.let(Instant::parse)?.let(occurred::isAfter) == true) return false

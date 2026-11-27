@@ -16,7 +16,10 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 internal data class Session(val userId: Long, val name: String, val token: String)
-internal data class Category(val id: Int, val name: String)
+internal data class Category(
+    val id: Int, val name: String, val color: String = "#7C7C8A", val description: String = "",
+    val archived: Boolean = false, val isSystem: Boolean = false
+)
 internal data class TransactionInput(
     val description: String,
     val cents: Long,
@@ -31,7 +34,8 @@ internal data class Transaction(
     val importId: String? = null,
     val occurredAt: String? = null,
     val pending: Boolean = false,
-    val syncRejected: Boolean = false
+    val syncRejected: Boolean = false,
+    val categoryColor: String = "#7C7C8A"
 )
 internal data class Filters(
     val search: String = "",
@@ -66,6 +70,22 @@ internal class MoneyApi(baseUrl: String, private val token: String? = null) {
         val result = JSONObject(request(path, "POST", body))
         val user = result.getJSONObject("user")
         return Session(user.getLong("id"), user.getString("name"), result.getString("token"))
+    }
+
+    suspend fun sync(payload: LedgerRequest): LedgerReply =
+        LedgerReply.parse(JSONObject(request("sync", "POST", payload.json())))
+
+    suspend fun lastBackupDate(): String? = JSONObject(request("sync/backup-status")).optionalString("lastBackupDate")
+
+    suspend fun legacyHistory(): LegacyHistory {
+        val categories = categories()
+        val rows = mutableListOf<Transaction>()
+        var page = 1
+        do {
+            val result = transactions(page++, Filters())
+            rows += result.items
+        } while (page <= result.totalPages)
+        return LegacyHistory(categories, rows.distinctBy { it.id })
     }
 
     suspend fun categories(): List<Category> {

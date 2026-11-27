@@ -2,10 +2,13 @@
   "name": "dt-money-backend",
   "version": "1.0.0",
   "main": "index.js",
+  "engines": {
+    "node": ">=22.23.0 <23"
+  },
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "node --import tsx --test",
     "dev": "tsx watch src/server.ts",
-    "start": "ts-node src/index.ts",
+    "start": "node --import tsx src/server.ts",
     "typeorm": "typeorm-ts-node-commonjs",
     "migration:run": "yarn typeorm migration:run -- -d src/infra/database/typeorm/dt-money/data-source.ts",
     "migration:revert": "yarn typeorm migration:revert -- -d src/database/typeorm/dt-money/data-source.ts"
@@ -16,8 +19,12 @@
   "description": "",
   "dependencies": {
     "@fastify/cors": "^11.0.0",
+    "@fastify/rate-limit": "10.3.0",
     "@fastify/swagger": "^9.4.2",
     "@fastify/swagger-ui": "^5.2.2",
+    "@libsql/client": "0.18.0",
+    "age-encryption": "0.3.1",
+    "aws4fetch": "1.0.20",
     "bcrypt": "^5.1.1",
     "dotenv": "^16.4.5",
     "fastify": "^5.1.0",

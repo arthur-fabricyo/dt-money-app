@@ -20,7 +20,17 @@ internal class AppSettings(context: Context) {
     val baseUrl: String get() = prefs.getString("api", null)
         ?: if (BuildConfig.DEBUG) "http://10.0.2.2:3001" else ""
 
-    fun scope(session: Session): String = "${session.userId}@$baseUrl"
+    val activeScope: String? get() = prefs.getString("scope", null)
+    fun scope(session: Session): String = activeScope ?: "${session.userId}@$baseUrl"
+
+    fun useLocal(): Session = synchronized(lock) {
+        if (activeScope == null) prefs.edit().putString("scope", "local:" + UUID.randomUUID()).apply()
+        loadSession() ?: Session(0, "Perfil local", "")
+    }
+
+    fun localProfile(): Session? = activeScope?.let { Session(0, "Perfil local", "") }
+
+    fun loadSession(): Session? = remoteSession() ?: localProfile()
 
     fun captureConfig(): CaptureConfig? = synchronized(lock) {
         val snapshot = prefs.all
@@ -48,7 +58,7 @@ internal class AppSettings(context: Context) {
         prefs.edit().putString("bank:$scope", bank).apply()
     }
 
-    fun loadSession(): Session? = runCatching {
+    private fun remoteSession(): Session? = runCatching {
         val cipherText = prefs.getString("session", null) ?: return null
         val data = Base64.decode(cipherText, Base64.NO_WRAP)
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
@@ -58,22 +68,28 @@ internal class AppSettings(context: Context) {
     }.getOrElse { signOut(); null }
 
     fun saveSession(url: String, session: Session) = synchronized(lock) {
+        val binding = "${session.userId}@$url"
+        val current = activeScope
+        val previousBinding = current?.let { prefs.getString("binding:$it", null) }
+            ?: current?.takeUnless { it.startsWith("local:") || it == LOCAL_SCOPE }
+        val selected = prefs.getString("profile:$binding", null)
+            ?: if (current == null || (previousBinding != null && previousBinding != binding)) binding else current
         val json = JSONObject().put("id", session.userId).put("name", session.name).put("token", session.token)
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.ENCRYPT_MODE, key())
         val data = cipher.iv + cipher.doFinal(json.toString().toByteArray())
-        prefs.edit().putString("api", url).putString("scope", "${session.userId}@$url")
+        prefs.edit().putString("api", url).putString("scope", selected).putString("binding:$selected", binding).putString("profile:$binding", selected)
             .putString("session_generation", UUID.randomUUID().toString())
             .putString("session", Base64.encodeToString(data, Base64.NO_WRAP)).apply()
     }
 
     fun signOut() = synchronized(lock) {
-        prefs.edit().remove("session").remove("scope").remove("session_generation").apply()
+        prefs.edit().remove("session").remove("session_generation").apply()
     }
 
     fun credentials(scope: String): Pair<String, Session>? = synchronized(lock) {
         if (prefs.getString("scope", null) != scope) return@synchronized null
-        val session = loadSession() ?: return@synchronized null
+        val session = remoteSession() ?: return@synchronized null
         baseUrl to session
     }
 
@@ -105,6 +121,7 @@ internal class AppSettings(context: Context) {
     }
 
     companion object {
+        const val LOCAL_SCOPE = "local"
         private const val KEY_ALIAS = "dt_money_session"
         private val lock = Any()
     }

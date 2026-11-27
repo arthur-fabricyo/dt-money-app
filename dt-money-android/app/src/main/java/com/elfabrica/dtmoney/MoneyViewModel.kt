@@ -7,8 +7,6 @@ import androidx.lifecycle.viewModelScope
 import java.io.IOException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
@@ -16,7 +14,6 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
-import kotlinx.coroutines.sync.withLock
 
 internal data class AppState(
     val baseUrl: String,
@@ -30,7 +27,11 @@ internal data class AppState(
     val bankReviews: List<BankReview> = emptyList(),
     val bankPackage: String = "",
     val enabledBanks: Set<Bank> = emptySet(),
-    val functionGemmaInstalled: Boolean = false
+    val functionGemmaInstalled: Boolean = false,
+    val syncEnabled: Boolean = false,
+    val syncStatus: LedgerSyncStatus = LedgerSyncStatus(),
+    val legacyPreview: LegacyHistory? = null,
+    val categoryPreview: List<CategoryDefinition>? = null
 )
 
 internal class MoneyViewModel(application: Application) : AndroidViewModel(application) {
@@ -39,7 +40,7 @@ internal class MoneyViewModel(application: Application) : AndroidViewModel(appli
     private val store = ImportStore.get(application)
     private val mutableState = MutableStateFlow(AppState(settings.baseUrl, settings.loadSession()))
     val state = mutableState.asStateFlow()
-    private val snapshots = mutableMapOf<Filters, TransactionPage>()
+    private var pages = 1
 
     init {
         viewModelScope.launch {
@@ -47,17 +48,6 @@ internal class MoneyViewModel(application: Application) : AndroidViewModel(appli
                 val session = state.value.session ?: return@collectLatest
                 loadDrafts(session)
                 showLocalDashboard(session)
-            }
-        }
-        viewModelScope.launch {
-            store.receipts.collectLatest {
-                delay(350)
-                val session = state.value.session ?: return@collectLatest
-                try {
-                    loadSnapshot(session, 1)
-                } catch (_: IOException) {
-                    // The last complete snapshot and local rows remain visible.
-                }
             }
         }
         if (state.value.session != null) refresh()
@@ -74,11 +64,91 @@ internal class MoneyViewModel(application: Application) : AndroidViewModel(appli
         val baseUrl = url.toString().trimEnd('/')
         val session = MoneyApi(baseUrl).authenticate(email.trim(), password, name?.trim())
         settings.saveSession(baseUrl, session)
-        snapshots.clear()
+        pages = 1
         mutableState.value = AppState(baseUrl, session, busy = true)
         BankImportWorker.schedule(context, settings.scope(session))
         loadDrafts(session)
         loadDashboard(session, 1)
+    }
+
+    fun useLocal() = perform {
+        val session = settings.useLocal()
+        mutableState.value = AppState(settings.baseUrl, session, busy = true)
+        loadDrafts(session)
+        loadDashboard(session, 1)
+    }
+
+    fun syncNow() = perform {
+        val session = state.value.session ?: return@perform
+        val finished = LedgerSyncWorker.synchronize(context, settings.scope(session))
+        if (!finished) LedgerSyncWorker.schedule(context, settings.scope(session))
+        showLocalDashboard(session)
+    }
+
+    fun previewLegacy() = perform {
+        val session = state.value.session ?: return@perform
+        val credentials = settings.credentials(settings.scope(session)) ?: return@perform
+        val preview = MoneyApi(credentials.first, credentials.second.token).legacyHistory()
+        mutableState.update { it.copy(legacyPreview = preview) }
+    }
+
+    fun dismissPreviews() { mutableState.update { it.copy(legacyPreview = null, categoryPreview = null) } }
+
+    fun importLegacy() = perform {
+        val current = state.value
+        val session = current.session ?: return@perform
+        val history = current.legacyPreview ?: return@perform
+        val count = withContext(Dispatchers.IO) { store.ledger.importLegacy(settings.scope(session), history) }
+        dismissPreviews()
+        showLocalDashboard(session)
+        message("$count transações importadas.")
+    }
+
+    fun previewCategories(uri: Uri) = perform {
+        val definitions = withContext(Dispatchers.IO) {
+            context.contentResolver.openInputStream(uri)?.use { input ->
+                val output = java.io.ByteArrayOutputStream()
+                val buffer = ByteArray(8192)
+                while (true) {
+                    val count = input.read(buffer)
+                    if (count < 0) break
+                    require(output.size() + count <= 512 * 1024)
+                    output.write(buffer, 0, count)
+                }
+                val bytes = output.toByteArray()
+                require(bytes.size <= 512 * 1024)
+                parseCategorySeed(bytes.toString(Charsets.UTF_8))
+            } ?: error("Arquivo indisponível")
+        }
+        mutableState.update { it.copy(categoryPreview = definitions) }
+    }
+
+    fun importCategories() = perform {
+        val session = state.value.session ?: return@perform
+        val definitions = state.value.categoryPreview ?: return@perform
+        val count = withContext(Dispatchers.IO) { store.ledger.importCategories(settings.scope(session), definitions) }
+        dismissPreviews()
+        showLocalDashboard(session)
+        message("$count categorias importadas. Edições existentes preservadas.")
+    }
+
+    fun saveCategory(id: Int?, definition: CategoryDefinition, close: () -> Unit) = perform {
+        val session = state.value.session ?: return@perform
+        withContext(Dispatchers.IO) { store.ledger.saveCategory(settings.scope(session), id, definition) }
+        close()
+        showLocalDashboard(session)
+    }
+
+    fun archiveCategory(category: Category) = perform {
+        val session = state.value.session ?: return@perform
+        withContext(Dispatchers.IO) { store.ledger.archiveCategory(settings.scope(session), category.id, !category.archived) }
+        showLocalDashboard(session)
+    }
+
+    fun resolveConflict(row: Long, keepLocal: Boolean) = perform {
+        val session = state.value.session ?: return@perform
+        withContext(Dispatchers.IO) { store.ledger.resolve(settings.scope(session), row, keepLocal) }
+        showLocalDashboard(session)
     }
 
     fun signOut() {
@@ -101,7 +171,7 @@ internal class MoneyViewModel(application: Application) : AndroidViewModel(appli
 
     fun loadMore() = perform {
         val current = state.value
-        val previous = snapshots[current.filters] ?: return@perform
+        val previous = current.transactions ?: return@perform
         val session = current.session ?: return@perform
         if (previous.page >= previous.totalPages) return@perform
         loadSnapshot(session, previous.page + 1)
@@ -138,15 +208,10 @@ internal class MoneyViewModel(application: Application) : AndroidViewModel(appli
     fun saveImportCategory(row: Transaction, categoryId: Int, close: () -> Unit) = perform {
         val session = state.value.session ?: return@perform
         val scope = settings.scope(session)
-        val importId = row.importId ?: return@perform
-        val stored = withContext(Dispatchers.IO) { store.setManualCategory(scope, importId, categoryId) }
-        if (stored) {
-            BankImportWorker.schedule(context, scope)
-            showLocalDashboard(session)
-        } else {
-            bankImportSync.withLock { api(session).updateImportCategory(importId, categoryId, CategorySource.MANUAL) }
-            refreshAfterWrite(session)
+        withContext(Dispatchers.IO) {
+            store.ledger.save(scope, row.input.copy(categoryId = categoryId), row.id)
         }
+        showLocalDashboard(session)
         close()
     }
 
@@ -186,7 +251,7 @@ internal class MoneyViewModel(application: Application) : AndroidViewModel(appli
         val current = state.value
         val session = current.session ?: return@perform
         val scope = settings.scope(session)
-        val validCategory = categoryId?.takeIf { id -> current.categories.any { it.id == id && it.name != UNCATEGORIZED } }
+        val validCategory = categoryId?.takeIf { id -> current.categories.any { it.id == id && it.isClassifiable() } }
         val saved = withContext(Dispatchers.IO) {
             store.confirmBankReview(scope, review.id, cents, direction, method, validCategory)
         }
@@ -207,37 +272,10 @@ internal class MoneyViewModel(application: Application) : AndroidViewModel(appli
 
     fun save(input: TransactionInput, id: Long?, draft: PurchaseDraft?, closeEditor: () -> Unit) = perform {
         val session = state.value.session ?: return@perform
-        if (draft == null) {
-            api(session).save(input, id)
-        } else {
-            val scope = settings.scope(session)
-            val claimed = withContext(Dispatchers.IO) {
-                store.changeState(scope, draft.id, "pending", "uncertain")
-            }
-            if (!claimed) {
-                closeEditor()
-                loadDrafts(session)
-                return@perform
-            }
-            try {
-                api(session).save(input, null)
-                withContext(NonCancellable + Dispatchers.IO) {
-                    store.changeState(scope, draft.id, "uncertain", "closed")
-                }
-            } catch (error: ApiError) {
-                if (error.status in setOf(400, 401, 403, 422)) {
-                    withContext(Dispatchers.IO) { store.changeState(scope, draft.id, "uncertain", "pending") }
-                } else {
-                    closeEditor()
-                }
-                throw error
-            } catch (error: IOException) {
-                closeEditor()
-                throw error
-            } finally {
-                loadDrafts(session)
-            }
+        withContext(Dispatchers.IO) {
+            store.ledger.save(settings.scope(session), input, id, draft)
         }
+        loadDrafts(session)
         closeEditor()
         message("Transação salva.")
         refreshAfterWrite(session)
@@ -245,8 +283,7 @@ internal class MoneyViewModel(application: Application) : AndroidViewModel(appli
 
     fun delete(id: Long) = perform {
         val session = state.value.session ?: return@perform
-        api(session).delete(id)
-        withContext(Dispatchers.IO) { store.markDeleted(settings.scope(session), id) }
+        withContext(Dispatchers.IO) { store.ledger.delete(settings.scope(session), id) }
         message("Transação excluída.")
         refreshAfterWrite(session)
     }
@@ -263,43 +300,27 @@ internal class MoneyViewModel(application: Application) : AndroidViewModel(appli
 
     private suspend fun loadDashboard(session: Session, page: Int) {
         val scope = settings.scope(session)
-        val cached = settings.categories(scope)
-        mutableState.update { it.copy(categories = cached) }
+        withContext(Dispatchers.IO) { store.ledger.migrateCaptures(scope, settings.categories(scope)) }
+        pages = page
         showLocalDashboard(session)
-        val categories = api(session).categories()
-        settings.saveCategories(scope, categories)
-        mutableState.update { it.copy(categories = categories) }
         BankCategoryWorker.schedule(context, scope)
-        loadSnapshot(session, page)
     }
 
     private suspend fun loadSnapshot(session: Session, page: Int) {
-        val scope = settings.scope(session)
-        val filters = state.value.filters
-        val snapshot = bankImportSync.withLock {
-            val local = withContext(Dispatchers.IO) { store.localImports(scope) }
-            val probe = local.asSequence().filter { it.sent && it.remoteId == null && !it.deleted }
-                .take(100).map { it.movement.importId }.toSet()
-            api(session).transactions(page, filters, probe).copy(
-                unsentAtSnapshot = local.asSequence().filter { !it.sent }.map { it.movement.importId }.toSet()
-            )
-        }
-        if (state.value.session != session || state.value.filters != filters) return
-        val previous = snapshots[filters]
-        snapshots[filters] = if (page > 1 && previous != null) {
-            snapshot.copy(items = (previous.items + snapshot.items).distinctBy { it.id })
-        } else snapshot
+        pages = page
         showLocalDashboard(session)
     }
 
     private suspend fun showLocalDashboard(session: Session) {
         val scope = settings.scope(session)
-        val local = withContext(Dispatchers.IO) { store.localImports(scope) }
-        val current = state.value
-        if (current.session != session) return
-        val snapshot = snapshots[current.filters]
-        val dashboard = reconcileImports(snapshot, local, current.filters, current.categories)
-        mutableState.update { it.copy(transactions = dashboard) }
+        val filters = state.value.filters
+        val result = withContext(Dispatchers.IO) {
+            Triple(store.ledger.categories(scope), store.ledger.page(scope, filters, pages), store.ledger.status(scope))
+        }
+        if (state.value.session != session || settings.activeScope != scope) return
+        mutableState.update { it.copy(categories = result.first, transactions = result.second,
+            syncStatus = result.third, syncEnabled = settings.credentials(scope) != null) }
+        if (result.third.pending > 0 && settings.credentials(scope) != null) LedgerSyncWorker.schedule(context, scope)
     }
 
     private suspend fun loadDrafts(session: Session) {
@@ -316,15 +337,13 @@ internal class MoneyViewModel(application: Application) : AndroidViewModel(appli
         }
     }
 
-    private fun api(session: Session) = MoneyApi(state.value.baseUrl, session.token)
     private fun message(message: String) = mutableState.update { it.copy(message = message) }
 
     private fun clearSession() {
-        val scope = state.value.session?.let(settings::scope)
+        val scope = settings.activeScope
         settings.signOut()
-        if (scope != null) BankImportWorker.cancel(context, scope)
-        snapshots.clear()
-        mutableState.value = AppState(settings.baseUrl)
+        if (scope != null) LedgerSyncWorker.cancel(context, scope)
+        mutableState.update { it.copy(session = settings.loadSession(), syncEnabled = false) }
     }
 
     private fun perform(action: suspend () -> Unit) {
@@ -343,7 +362,9 @@ internal class MoneyViewModel(application: Application) : AndroidViewModel(appli
                     else -> "A API respondeu com erro ${error.status}."
                 })
             } catch (_: IOException) {
-                message("Falha de conexão. Confira o histórico antes de repetir um envio.")
+                message("Sem conexão com o servidor. Seus dados locais continuam disponíveis.")
+            } catch (_: IllegalArgumentException) {
+                message("Confira os campos: nome único, cor hexadecimal e descrição válida.")
             } catch (_: Exception) {
                 message("Não foi possível concluir a operação.")
             } finally {
