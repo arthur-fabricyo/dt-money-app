@@ -20,6 +20,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
@@ -45,6 +46,7 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 
 class MainActivity : ComponentActivity() {
     private val model: MoneyViewModel by viewModels()
@@ -105,6 +107,7 @@ class MainActivity : ComponentActivity() {
 
 private data class EditTarget(val transaction: Transaction? = null, val draft: PurchaseDraft? = null)
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun Dashboard(state: AppState, model: MoneyViewModel, access: Boolean, openSettings: () -> Unit) {
     var inbox by rememberSaveable { mutableStateOf(false) }
@@ -131,6 +134,13 @@ private fun Dashboard(state: AppState, model: MoneyViewModel, access: Boolean, o
         SettingsScreen(state, model, access, openSettings, onBack = { settingsOpen = false })
         return
     }
+    var refreshing by remember { mutableStateOf(false) }
+    LaunchedEffect(state.busy) { if (!state.busy) refreshing = false }
+    PullToRefreshBox(
+        isRefreshing = refreshing && state.busy,
+        onRefresh = { if (active && !inbox) { refreshing = true; model.refresh() } },
+        modifier = Modifier.fillMaxSize(),
+    ) {
     LazyColumn(
         modifier = Modifier.fillMaxSize().imePadding(),
         contentPadding = PaddingValues(bottom = 24.dp),
@@ -201,11 +211,23 @@ private fun Dashboard(state: AppState, model: MoneyViewModel, access: Boolean, o
                         }, onDelete = { deleting = row })
                     }
                 }
-                if (page.page < page.totalPages) item {
-                    DtButton(model::loadMore, inset.fillMaxWidth(), enabled = active, outlined = true) { Text("Carregar mais") }
+                if (page.page < page.totalPages) item(key = "load-more") {
+                    val busy by rememberUpdatedState(state.busy)
+                    LaunchedEffect(page.page, state.filters) {
+                        snapshotFlow { busy }.first { !it }
+                        model.loadMore()
+                    }
+                    Box(inset.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                        if (!state.busy && state.message != null) {
+                            DtButton(model::loadMore, enabled = true, outlined = true) { Text("Tentar novamente") }
+                        } else {
+                            CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
+                        }
+                    }
                 }
             }
         }
+    }
     }
     categorizing?.let { row ->
         var selected by remember(row) { mutableIntStateOf(row.input.categoryId) }
@@ -352,13 +374,11 @@ private fun EditTransaction(
     val existing = editor.transaction?.input
     val draft = editor.draft
     var description by rememberSaveable { mutableStateOf(existing?.description ?: draft?.description.orEmpty()) }
-    val initialValue = (existing?.cents ?: draft?.cents)?.let { BigDecimal.valueOf(it, 2).toPlainString().replace('.', ',') }
+    val initialValue = (existing?.cents ?: draft?.cents)?.toString()
     var amount by rememberSaveable { mutableStateOf(initialValue.orEmpty()) }
     var type by rememberSaveable { mutableIntStateOf(existing?.typeId ?: 2) }
     var category by rememberSaveable { mutableStateOf(existing?.categoryId) }
-    val cents = amount.trim().takeIf { Regex("[0-9]+(?:[,.][0-9]{1,2})?").matches(it) }
-        ?.replace(',', '.')?.toBigDecimalOrNull()?.movePointRight(2)
-        ?.let { runCatching { it.longValueExact() }.getOrNull() }?.takeIf { it > 0 }
+    val cents = amount.toLongOrNull()?.takeIf { it > 0 }
     val title = when {
         draft != null -> "Revisar compra"
         existing != null -> "Editar transação"
@@ -366,7 +386,7 @@ private fun EditTransaction(
     }
     DtSheet(title, onClose = close, closeEnabled = !busy) {
         Field(description, { description = it }, "Descrição")
-        Field(amount, { amount = it }, "Valor em reais", KeyboardType.Decimal)
+        CurrencyField(amount, { amount = it })
         if (draft == null) DirectionSelector(type) { type = it }
         Choice("Categoria", category, categories.filter { !it.archived || it.id == existing?.categoryId }.map { it.id to it.name }) { category = it }
         if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
