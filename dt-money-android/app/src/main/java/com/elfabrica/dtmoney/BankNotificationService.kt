@@ -106,7 +106,7 @@ class BankNotificationService : NotificationListenerService() {
                 val component = ComponentName(context, BankNotificationService::class.java)
                 fun active() = settings.captureConfig() == config && manager.isNotificationListenerAccessGranted(component)
 
-                val categories = settings.categories(config.scope)
+                val categories = store.ledger.categories(config.scope)
                 val result = interpretBankAlert(
                     active = ::active,
                     primary = { FunctionGemmaClassifier(context).interpret(prepared, categories) },

@@ -49,7 +49,7 @@ import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
 
 @Composable
-internal fun SignIn(state: AppState, authenticate: (String, String, String, String?) -> Unit) {
+internal fun SignIn(state: AppState, authenticate: (String, String, String, String?) -> Unit, useLocal: (() -> Unit)? = null) {
     var registering by rememberSaveable { mutableStateOf(false) }
     var url by rememberSaveable(state.baseUrl) { mutableStateOf(state.baseUrl) }
     var name by rememberSaveable { mutableStateOf("") }
@@ -86,6 +86,12 @@ internal fun SignIn(state: AppState, authenticate: (String, String, String, Stri
             if (!keyboardVisible) {
                 DtLogo(Modifier.widthIn(max = 255.dp).fillMaxWidth().height(48.dp))
                 Spacer(Modifier.height(24.dp))
+            }
+            if (useLocal != null) {
+                Spacer(Modifier.height(16.dp))
+                DtButton(onClick = useLocal, modifier = Modifier.fillMaxWidth(), enabled = !state.busy, outlined = true) {
+                    Text("Usar somente neste aparelho")
+                }
             }
             Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
                 if (registering) {

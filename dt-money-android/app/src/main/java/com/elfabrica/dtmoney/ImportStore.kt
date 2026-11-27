@@ -44,7 +44,9 @@ internal data class ImportReceipt(
 )
 
 internal class ImportStore(context: Context, databaseName: String = "bank_imports.db") :
-    SQLiteOpenHelper(context, databaseName, null, 3) {
+    SQLiteOpenHelper(context, databaseName, null, 4) {
+    val ledger = LedgerStore(this)
+    fun notifyLedgerChanged() { updates.update { it + 1 } }
     private val updates = MutableStateFlow(0L)
     val changes = updates.asStateFlow()
     private val reconciliations = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
@@ -66,11 +68,13 @@ internal class ImportStore(context: Context, databaseName: String = "bank_import
         )
         createMovements(db)
         createBankReviews(db)
+        LedgerStore.createSchema(db)
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
         if (oldVersion < 2) createMovements(db)
         if (oldVersion < 3) createBankReviews(db)
+        if (oldVersion < 4) LedgerStore.createSchema(db)
     }
 
     private fun createMovements(db: SQLiteDatabase) {
@@ -102,7 +106,11 @@ internal class ImportStore(context: Context, databaseName: String = "bank_import
     }
 
     fun record(scope: String, movement: BankMovement): Boolean {
-        val inserted = insertMovement(writableDatabase, scope, movement, null, CategorySource.UNSET)
+        val inserted = writableDatabase.transaction {
+            val added = insertMovement(this, scope, movement, null, CategorySource.UNSET)
+            if (added) ledger.recordCapture(this, scope, movement, null)
+            added
+        }
         if (inserted) updates.update { it + 1 }
         return inserted
     }
@@ -265,7 +273,9 @@ internal class ImportStore(context: Context, databaseName: String = "bank_import
                 return false
             }
         }
-        insertMovement(db, scope, movement, categoryId, source)
+        if (insertMovement(db, scope, movement, categoryId, source)) {
+            ledger.recordCapture(db, scope, movement, categoryId)
+        }
         return true
     }
 
@@ -344,17 +354,29 @@ internal class ImportStore(context: Context, databaseName: String = "bank_import
     private fun saveCategory(
         scope: String, importId: String, categoryId: Int, source: CategorySource, condition: String
     ): Boolean {
-        val statement = writableDatabase.compileStatement(
+        val changed = writableDatabase.transaction {
+            val statement = compileStatement(
             "UPDATE bank_movement SET category_id = ?, category_source = ?, " +
                 "revision = revision + 1, category_pending = 1, classified = 1, sync_rejected = 0 " +
                 "WHERE scope = ? AND id = ? AND deleted = 0$condition"
         )
-        val changed = statement.use {
-            it.bindLong(1, categoryId.toLong())
-            it.bindString(2, source.name)
-            it.bindString(3, scope)
-            it.bindString(4, importId)
-            it.executeUpdateDelete() == 1
+            val updated = statement.use {
+                it.bindLong(1, categoryId.toLong())
+                it.bindString(2, source.name)
+                it.bindString(3, scope)
+                it.bindString(4, importId)
+                it.executeUpdateDelete() == 1
+            }
+            if (updated && !ledger.applyCaptureCategory(this, scope, importId, categoryId) && source == CategorySource.MODEL) {
+                // Roll back classification when the catalog changed during inference.
+                update("bank_movement", ContentValues().apply {
+                    putNull("category_id")
+                    put("category_source", CategorySource.UNSET.name)
+                    put("classified", true)
+                    put("category_pending", false)
+                }, "scope = ? AND id = ?", arrayOf(scope, importId))
+                false
+            } else updated
         }
         if (changed) updates.update { it + 1 }
         return changed
@@ -398,7 +420,9 @@ internal class ImportStore(context: Context, databaseName: String = "bank_import
             put("cents", purchase.cents)
             put("posted_at", postedAt)
         }
-        writableDatabase.insertWithOnConflict("purchase", null, values, SQLiteDatabase.CONFLICT_IGNORE)
+        if (writableDatabase.insertWithOnConflict("purchase", null, values, SQLiteDatabase.CONFLICT_IGNORE) != -1L) {
+            notifyLedgerChanged()
+        }
     }
 
     fun pending(scope: String): List<PurchaseDraft> =
@@ -426,6 +450,14 @@ internal class ImportStore(context: Context, databaseName: String = "bank_import
         return writableDatabase.update(
             "purchase", values, "scope = ? AND id = ? AND state = ?", arrayOf(scope, id, from)
         ) == 1
+    }
+
+    fun moveUnlinkedProfile(target: String) = writableDatabase.transaction {
+        val values = ContentValues().apply { put("scope", target) }
+        listOf("purchase", "bank_movement", "bank_alert", "ledger_entry", "ledger_outbox").forEach { table ->
+            updateWithOnConflict(table, values, "scope = ?", arrayOf(AppSettings.LOCAL_SCOPE), SQLiteDatabase.CONFLICT_IGNORE)
+        }
+        notifyLedgerChanged()
     }
 
     companion object {

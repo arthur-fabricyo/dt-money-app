@@ -43,7 +43,7 @@ internal fun BankReviewDialog(
     confirm: (Long, Direction, PaymentMethod, Int?) -> Unit
 ) {
     val initialAmount = draft.cents?.let { BigDecimal.valueOf(it, 2).toPlainString().replace('.', ',') }.orEmpty()
-    val options = listOf(0 to UNCATEGORIZED) + categories.filter { it.name != UNCATEGORIZED }.map { it.id to it.name }
+    val options = listOf(0 to UNCATEGORIZED) + categories.filter(Category::isClassifiable).map { it.id to it.name }
     var amount by remember { mutableStateOf(initialAmount) }
     var direction by remember { mutableStateOf(draft.direction) }
     var method by remember { mutableStateOf(draft.method ?: PaymentMethod.UNKNOWN) }

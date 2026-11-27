@@ -74,7 +74,7 @@ class MainActivity : ComponentActivity() {
                             }
                         }
                         if (state.session == null) {
-                            SignIn(state, model::authenticate)
+                            SignIn(state, model::authenticate, model::useLocal)
                         } else {
                             key(state.session?.userId, state.baseUrl) {
                                 Dashboard(state, model, notificationAccess) {
@@ -210,7 +210,7 @@ private fun Dashboard(state: AppState, model: MoneyViewModel, access: Boolean, o
     categorizing?.let { row ->
         var selected by remember(row) { mutableIntStateOf(row.input.categoryId) }
         DtSheet("Alterar categoria", onClose = { categorizing = null }, closeEnabled = active) {
-            Choice("Categoria", selected, state.categories.map { it.id to it.name }) { selected = it }
+            Choice("Categoria", selected, state.categories.filterNot { it.archived }.map { it.id to it.name }) { selected = it }
             DtButton(onClick = { model.saveImportCategory(row, selected) { categorizing = null } },
                 modifier = Modifier.fillMaxWidth(), enabled = active && state.categories.any { it.id == selected }) {
                 Text("Salvar")
@@ -278,26 +278,16 @@ private fun SettingsScreen(state: AppState, model: MoneyViewModel, access: Boole
             TextButton(onClick = onBack) { Text("Voltar") }
         }
         SecondaryTabRow(selectedTabIndex = tab, containerColor = DtColors.Secondary, contentColor = DtColors.Green) {
-            Tab(selected = tab == 0, onClick = { tab = 0 }, text = { Text("Capturas") })
-            Tab(selected = tab == 1, onClick = { tab = 1 }, text = { Text("Sair") })
-        }
-        LazyColumn(contentPadding = PaddingValues(20.dp)) {
-            if (tab == 0) {
-                item {
-                    CaptureSettings(state, access, model::saveBank, model::setBankEnabled, model::installFunctionGemma, openSettings)
-                }
-            } else {
-                item {
-                    DtCard(Modifier.fillMaxWidth()) {
-                        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                            Text("Sessão", style = MaterialTheme.typography.titleMedium)
-                            DtButton(model::signOut, Modifier.fillMaxWidth(), enabled = !state.busy, outlined = true) {
-                                Text("Sair da conta")
-                            }
-                        }
-                    }
-                }
+            listOf("Capturas", "Categorias", "Sincronização").forEachIndexed { index, label ->
+                Tab(selected = tab == index, onClick = { tab = index }, text = { Text(label) })
             }
+        }
+        when (tab) {
+            0 -> LazyColumn(contentPadding = PaddingValues(20.dp)) {
+                item { CaptureSettings(state, access, model::saveBank, model::setBankEnabled, model::installFunctionGemma, openSettings) }
+            }
+            1 -> CategorySettings(state, model)
+            else -> SyncSettings(state, model)
         }
     }
 }
@@ -361,11 +351,11 @@ private fun EditTransaction(
 ) {
     val existing = editor.transaction?.input
     val draft = editor.draft
-    var description by remember { mutableStateOf(existing?.description ?: draft?.description.orEmpty()) }
+    var description by rememberSaveable { mutableStateOf(existing?.description ?: draft?.description.orEmpty()) }
     val initialValue = (existing?.cents ?: draft?.cents)?.let { BigDecimal.valueOf(it, 2).toPlainString().replace('.', ',') }
-    var amount by remember { mutableStateOf(initialValue.orEmpty()) }
-    var type by remember { mutableIntStateOf(existing?.typeId ?: 2) }
-    var category by remember { mutableStateOf(existing?.categoryId) }
+    var amount by rememberSaveable { mutableStateOf(initialValue.orEmpty()) }
+    var type by rememberSaveable { mutableIntStateOf(existing?.typeId ?: 2) }
+    var category by rememberSaveable { mutableStateOf(existing?.categoryId) }
     val cents = amount.trim().takeIf { Regex("[0-9]+(?:[,.][0-9]{1,2})?").matches(it) }
         ?.replace(',', '.')?.toBigDecimalOrNull()?.movePointRight(2)
         ?.let { runCatching { it.longValueExact() }.getOrNull() }?.takeIf { it > 0 }
@@ -378,7 +368,7 @@ private fun EditTransaction(
         Field(description, { description = it }, "Descrição")
         Field(amount, { amount = it }, "Valor em reais", KeyboardType.Decimal)
         if (draft == null) DirectionSelector(type) { type = it }
-        Choice("Categoria", category, categories.map { it.id to it.name }) { category = it }
+        Choice("Categoria", category, categories.filter { !it.archived || it.id == existing?.categoryId }.map { it.id to it.name }) { category = it }
         if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
         else message?.let { Text(it) }
         val categoryId = category

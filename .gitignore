@@ -2,3 +2,7 @@
 .env
 .env.*
 !.env.example
+
+# Backend dependencies and local sync development files.
+/DT-money-backend/node_modules/
+/DT-money-backend/local-sync-test.db*
