@@ -2,12 +2,12 @@
 
 ## Objetivo
 
-O DT Money usa o SQLite do Android como banco principal. O usuário escolheu a opção 2, com sincronização opcional entre aparelhos, e pediu um backup diário com retenção de dez dias. O Render gratuito foi autorizado para testes. Este desenho substitui as partes do desenho de categorias que atribuíam ao servidor a autoridade sobre o catálogo e exigiam conexão para alterá-lo.
+O DT Money usa o SQLite do Android como banco principal. O usuário escolheu a opção 2, com sincronização opcional entre aparelhos, e pediu um backup diário em um bucket do Cloudflare R2 com retenção de dez dias. O Render gratuito foi autorizado para testes. Este desenho substitui as partes do desenho de categorias que atribuíam ao servidor a autoridade sobre o catálogo e exigiam conexão para alterá-lo.
 
 ## Onde sincronizar e guardar o backup
 
-- **PC Windows na rede local, proposta.** O backend do projeto recebe os dados sincronizados e guarda uma réplica SQLite em um diretório de dados fora do repositório. O Agendador de Tarefas do Windows executa o backup diário em outra pasta fora do repositório. O celular pode usar a API quando o PC estiver ligado e acessível pela rede. Essa opção atende ao escopo de hospedagem de teste do Render e usa o PC que já roda o backend.
-- **Servidor sempre disponível.** Permite sincronizar e produzir backups com o PC desligado. Exige armazenamento durável e um agendador com acesso a esse armazenamento. O plano gratuito do Render usa arquivos temporários. O cron nativo do Render tem cobrança mínima de US$ 1 por mês e roda separado do serviço web, sem acesso ao disco dele. Essa opção depende de autorização para hospedar os dados reais e da escolha de um destino durável.
+- **PC Windows na rede local, proposta para sincronização.** O backend recebe os dados sincronizados e guarda uma réplica SQLite em um diretório de dados fora do repositório. O celular pode usar a API quando o PC estiver ligado e acessível pela rede. O Agendador de Tarefas do Windows produz o backup diário e envia a cópia criptografada para um bucket privado do Cloudflare R2. O backup fica disponível para recuperação mesmo se o PC for perdido.
+- **Servidor sempre disponível.** Permite sincronizar e produzir backups com o PC desligado. Exige uma réplica em armazenamento durável e um agendador com acesso a ela. O bucket do Cloudflare continua sendo o destino dos backups. O Render gratuito fica reservado ao ambiente de teste.
 
 ## Operação no celular
 
@@ -28,12 +28,19 @@ O DT Money usa o SQLite do Android como banco principal. O usuário escolheu a o
 ## Agendamento, retenção e restauração
 
 - Proposta de horário inicial de 03h15 em `America/Sao_Paulo`. No Windows, usar o Agendador de Tarefas, com execução quando o computador voltar a ficar disponível se perder o horário. A tarefa abre o SQLite em modo somente leitura e cria um snapshot consistente pela API de backup do SQLite. O backend pode estar desligado durante o backup, desde que o arquivo esteja disponível. A tarefa usa caminhos absolutos e permissões do usuário do serviço.
-- Publicar um snapshot verificado por dia. Gravar em arquivo temporário, conferir integridade, então promover para o destino definitivo. Em nova execução no mesmo dia, publicar apenas uma cópia válida daquela data. Manter o dia atual e os nove dias anteriores e excluir somente arquivos de backup identificados pela rotina após sucesso. Em falha, registrar erro e preservar a última cópia válida até a próxima execução bem-sucedida. O banco ativo fica fora da rotação. A pasta de backup terá acesso restrito no Windows. A separação em pastas permite restaurar após perda do celular, mas a perda do disco do PC pode levar a réplica e os backups juntos.
-- A restauração é manual. Verificar integridade e versão do snapshot, guardar a réplica atual antes de substituir, interromper gravações e validar o banco restaurado antes de reabrir a API. Atualizar a geração do servidor para invalidar cursores antigos. Após detectar a troca de geração, o Android volta a conciliar o estado completo preservando os dados locais e as alterações pendentes. Exibir conflitos existentes em vez de sobrescrever o histórico mais recente do celular. Documentar como testar a restauração em outra pasta com dados sintéticos.
+- Gerar um snapshot verificado por dia em uma pasta temporária de acesso restrito. Criptografar no PC com uma chave pública de backup e enviar pelo endpoint S3 do R2 em HTTPS. Usar a data de Brasília na chave `dt-money/backups/AAAA-MM-DD.sqlite.age`. Uma segunda execução no mesmo dia reconhece a publicação anterior e mantém uma cópia por data. Limpar os arquivos temporários e registrar falhas de geração ou envio. Mostrar no app a data do último envio confirmado quando o servidor estiver acessível.
+- Manter o bucket privado e usar a classe Standard. Configurar expiração de dez dias somente no prefixo dos backups do DT Money. A expiração é executada pelo R2 mesmo com o PC desligado e a remoção pode ocorrer depois da hora de expiração. Se não houver novos envios por dez dias, a última cópia também fica sujeita à regra. Os arquivos do banco ativo e da chave de recuperação ficam fora do bucket.
+- A tarefa usa credenciais de objetos restritas ao bucket escolhido. A credencial de administração usada para configurar a expiração fica separada. Manter as credenciais fora do repositório e do APK. Guardar a chave privada de recuperação em um local que o usuário consiga acessar sem depender do PC nem do bucket.
+- A restauração é manual. Baixar a cópia escolhida, descriptografar e verificar sua integridade e versão. Guardar a réplica atual antes de substituir, interromper gravações e validar o banco restaurado antes de reabrir a API. Atualizar a geração do servidor para invalidar cursores antigos. Após detectar a troca de geração, o Android volta a conciliar o estado completo preservando os dados locais e as alterações pendentes. Exibir conflitos existentes em vez de sobrescrever o histórico mais recente do celular. Documentar como testar a restauração em outra pasta com dados sintéticos.
 
 ## Critérios de aceitação
 
 - Criar, editar, recategorizar e excluir offline. Reiniciar o app e conferir o saldo e a disponibilidade das categorias. Capturar Pix de ambos os tipos e compras nos meios aceitos, com a IA local disponível ou ausente.
 - Migrar um banco Android anterior com capturas pendentes e uma conta com histórico na API. Executar duas vezes e conferir valores, datas, categorias e ausência de duplicatas. Desconectar a conta e conferir que o perfil ainda funciona offline.
 - Usar dois aparelhos ou emuladores com a mesma conta. Testar mudanças offline, envio repetido, conflitos, exclusão e isolamento entre contas. Simular restauração de um snapshot anterior e reconciliação com alterações locais mais novas.
-- Criar snapshots sintéticos durante gravações, validar o arquivo e testar a janela de dez dias, a execução repetida, a falha na criação e a restauração separada. Verificar o agendamento e registrar uma execução real de teste no Windows antes de ativar o formato sobre os dados do usuário.
+- Criar snapshots sintéticos durante gravações, validar o arquivo e testar envio repetido, falhas de conexão, criptografia e restauração. Verificar a regra de expiração no prefixo e testar que a URL pública não dá acesso à cópia. Registrar uma execução de teste no Windows com confirmação de envio e restauração antes de ativar a rotina sobre os dados do usuário.
+
+## Referências
+
+- [Expiração de objetos no Cloudflare R2](https://developers.cloudflare.com/r2/buckets/object-lifecycles/)
+- [Credenciais de acesso ao Cloudflare R2](https://developers.cloudflare.com/r2/api/tokens/)
