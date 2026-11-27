@@ -14,7 +14,7 @@ Este projeto foi desenvolvido para resolver a necessidade de uma ferramenta de g
 
 ## Visão Geral
 
-O DT Money App é uma aplicação móvel de gestão financeira pessoal para registrar, categorizar e visualizar receitas e despesas. O cliente Android nativo usa **Kotlin e Jetpack Compose** e compartilha o backend Fastify com o cliente React Native (Expo).
+O DT Money App é uma aplicação móvel de gestão financeira pessoal para registrar, categorizar e visualizar receitas e despesas. O cliente Android nativo usa **Kotlin e Jetpack Compose** e utiliza o backend Fastify para sincronização opcional.
 
 ### Android nativo
 
@@ -28,93 +28,8 @@ O catálogo aceita importação JSON com prévia e reconhecimento de categorias 
 
 O APK de desenvolvimento registra Pix e compras aprovadas a partir de notificações do Nubank e do Santander. Para formatos novos, a IA local sugere os dados da transação e o app valida a movimentação antes de lançar. Veja como gerar o APK, configurar o login e testar no celular por Wi‑Fi no [guia do Android](dt-money-android/README.md).
 
-## Solução Implementada
+## Componentes do projeto
 
-O aplicativo foi construído como uma solução Full Stack (com um backend separado, `DT-money-backend`, que interage via API) e se destaca pela sua abordagem técnica para garantir performance e uma excelente experiência de usuário. As principais funcionalidades e soluções técnicas incluem:
-
-*   **Gerenciamento de Estado Otimizado:** Utilização da **React Context API** para gerenciar o estado global das transações, categorias e filtros, garantindo que os dados sejam acessíveis e atualizados de forma eficiente em toda a aplicação.
-*   **Performance de Renderização:** Implementação de `useCallback` e `useMemo` em pontos estratégicos para evitar re-renderizações desnecessárias de componentes e funções, resultando em uma interface fluida e responsiva.
-*   **Formulários Inteligentes e Validados:** Uso do **React Hook Form** em conjunto com o **Yup** para a criação de formulários performáticos e com validação robusta, minimizando o impacto na renderização e garantindo a integridade dos dados.
-*   **Filtragem e Paginação Avançadas:** Lógica de negócios para filtrar transações por texto, categoria e data, além de uma implementação de paginação (scroll infinito) que otimiza o carregamento de grandes volumes de dados.
-*   **Interface de Usuário Moderna e Responsiva:** Estilização com **NativeWind (Tailwind CSS para React Native)**, garantindo um design consistente e adaptável a diferentes tamanhos de tela e dispositivos.
-*   **Interações Fluidas:** Componentes de UI como `Gorhom Bottom Sheet` e animações com `React Native Reanimated` proporcionam uma experiência de usuário rica e interativa.
-
-## Stack Tecnológica
-
-*   **Frontend (Mobile):** [React Native](https://reactnative.dev/) (com [Expo](https://expo.dev/))
-*   **Linguagem:** [TypeScript](https://www.typescriptlang.org/)
-*   **Estilização:** [NativeWind](https://www.nativewind.dev/) (Tailwind CSS para React Native)
-*   **Gerenciamento de Estado:** [React Context API](https://react.dev/learn/passing-props-with-a-context)
-*   **Formulários:** [React Hook Form](https://react-hook-form.com/) com [Yup](https://github.com/jquense/yup) (validação de esquemas)
-*   **Consumo de API:** [Axios](https://axios-http.com/)
-*   **Navegação:** [React Navigation](https://reactnavigation.org/) ([Native](https://reactnavigation.org/docs/native-stack-navigator/) & [Stack](https://reactnavigation.org/docs/stack-navigator/))
-*   **Componentes de UI:**
-    *   [Gorhom Bottom Sheet](https://gorhom.github.io/react-native-bottom-sheet/)
-    *   [React Native Reanimated](https://docs.swmansion.com/react-native-reanimated/)
-    *   [React Native Gesture Handler](https://docs.swmansion.com/react-native-gesture-handler/)
-*   **Armazenamento Local:** [@react-native-async-storage/async-storage](https://react-native-async-storage.github.io/async-storage/)
-*   **Utilitários:** [Date-fns](https://date-fns.org/), [Clsx](https://github.com/clsx-unit/clsx), [Qs](https://github.com/ljharb/qs)
-
-## Arquitetura e Design
-
-O projeto adota uma arquitetura modular, com uma clara separação de responsabilidades entre as camadas de UI (`screens`, `components`), gerenciamento de estado (`context`), e lógica de negócios/integração com API (`shared/services`). Essa abordagem facilita a manutenção, o teste e a escalabilidade da aplicação. O uso de TypeScript em todo o projeto garante a segurança de tipos e melhora a experiência do desenvolvedor.
-
-
-## Pré-visualização  
-
-| Tela de Login | Tela de Dashboard |
-|---------------|------------------|
-| <img src="https://github.com/user-attachments/assets/edbff45c-cbbd-4915-8304-fe89dd15f536" width="250" /> | <img src="https://github.com/user-attachments/assets/820b0cfd-edde-492e-9efe-112fce336a67" width="250" /> |
-
----
-
-## 🚀 Como Rodar o Cliente Expo Localmente
-
-Siga os passos abaixo para configurar o ambiente de desenvolvimento e executar o projeto em sua máquina.
-
-### Pré-requisitos
-
-Certifique-se de ter instalado em sua máquina:
-*   [Node.js](https://nodejs.org/) (versão 18 ou superior)
-*   [pnpm](https://pnpm.io/) (ou npm/yarn)
-*   [Expo CLI](https://docs.expo.dev/get-started/installation/) (`npm install -g expo-cli`)
-
-### Passo 1: Clonar o Repositório
-
-```bash
-git clone https://github.com/ElFabrica/dt-money-app.git
-cd dt-money-app/dt-money-app
-```
-
-### Passo 2: Instalar Dependências
-
-```bash
-pnpm install
-```
-
-### Passo 3: Configurar o Backend (Opcional, mas recomendado)
-
-Este projeto foi projetado para funcionar com um backend. Você pode encontrar o repositório do backend aqui: [DT-money-backend](https://github.com/ElFabrica/dt-money-app/tree/main/DT-money-backend). Siga as instruções no README do backend para configurá-lo e executá-lo localmente.
-
-Após configurar o backend, crie um arquivo `.env` na raiz do projeto `dt-money-app` com a URL da sua API:
-
-```env
-EXPO_PUBLIC_API_URL=http://localhost:3333/api
-```
-
-### Passo 4: Executar o Projeto
-
-Inicie o servidor de desenvolvimento do Expo:
-
-```bash
-pnpm start
-```
-
-Você pode então escanear o QR Code com o aplicativo Expo Go no seu celular ou rodar em um emulador/simulador.
-
-## 🛠️ Scripts Disponíveis
-
-*   `pnpm start`: Inicia o servidor de desenvolvimento do Expo.
-*   `pnpm android`: Executa a aplicação em um emulador/dispositivo Android.
-*   `pnpm ios`: Executa a aplicação em um simulador/dispositivo iOS.
-*   `pnpm web`: Inicia a aplicação em um navegador web.
+- [Android nativo](dt-money-android/README.md): aplicativo Kotlin com Jetpack Compose e SQLite.
+- [Backend](DT-money-backend/README.md): API Fastify para autenticação, sincronização e backups.
+- [Worker de backup](cloudflare/backup-worker/README.md): agendamento dos backups no Cloudflare.
