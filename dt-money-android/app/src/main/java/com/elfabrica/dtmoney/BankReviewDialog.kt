@@ -13,9 +13,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
-import java.math.BigDecimal
 
 @Composable
 internal fun BankReviewCard(draft: BankReview, enabled: Boolean, review: () -> Unit, discard: () -> Unit) {
@@ -42,19 +40,17 @@ internal fun BankReviewDialog(
     draft: BankReview, categories: List<Category>, busy: Boolean, close: () -> Unit,
     confirm: (Long, Direction, PaymentMethod, Int?) -> Unit
 ) {
-    val initialAmount = draft.cents?.let { BigDecimal.valueOf(it, 2).toPlainString().replace('.', ',') }.orEmpty()
+    val initialAmount = draft.cents?.toString().orEmpty()
     val options = listOf(0 to UNCATEGORIZED) + categories.filter(Category::isClassifiable).map { it.id to it.name }
     var amount by remember { mutableStateOf(initialAmount) }
     var direction by remember { mutableStateOf(draft.direction) }
     var method by remember { mutableStateOf(draft.method ?: PaymentMethod.UNKNOWN) }
     var category by remember { mutableStateOf(draft.categoryId ?: 0) }
-    val cents = amount.trim().takeIf { Regex("[0-9]+(?:[,.][0-9]{1,2})?").matches(it) }
-        ?.replace(',', '.')?.toBigDecimalOrNull()?.movePointRight(2)
-        ?.let { runCatching { it.longValueExact() }.getOrNull() }?.takeIf { it in 1..999_999_999_999L }
+    val cents = amount.toLongOrNull()?.takeIf { it in 1..999_999_999_999L }
 
     DtSheet("Revisar captura do ${draft.bank.appName}", onClose = close, closeEnabled = !busy) {
         Text("Confirme os dados da movimentação antes de lançar.", color = DtColors.Muted)
-        Field(amount, { amount = it }, "Valor em reais", KeyboardType.Decimal)
+        CurrencyField(amount, { amount = it })
         DirectionSelector(direction?.typeId) { type -> direction = Direction.entries.first { it.typeId == type } }
         Choice("Meio de pagamento", method.ordinal, listOf(
             PaymentMethod.UNKNOWN.ordinal to "Meio desconhecido", PaymentMethod.PIX.ordinal to "Pix",

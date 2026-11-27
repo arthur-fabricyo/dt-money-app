@@ -129,6 +129,39 @@ class LedgerStoreTest {
         assertTrue(ledger.status(scope).conflicts.isEmpty())
     }
 
+    @Test fun paginationPreservesOrderTotalsAndFiltersAcrossPages() = withStore { store, _ ->
+        val ledger = store.ledger
+        repeat(31) { index ->
+            ledger.save(scope, TransactionInput("Item $index", 100, 0, if (index % 2 == 0) 1 else 2),
+                occurredAt = instant.plusSeconds(index.toLong()))
+        }
+        val first = ledger.page(scope, Filters(), 1)
+        val second = ledger.page(scope, Filters(), 2)
+        val last = ledger.page(scope, Filters(), 3)
+        assertEquals(15, first.items.size)
+        assertEquals(30, second.items.size)
+        assertEquals(31, last.items.size)
+        assertEquals(3, first.totalPages)
+        assertEquals(first.items.map { it.id }, second.items.take(15).map { it.id })
+        assertEquals(31, last.items.map { it.id }.distinct().size)
+        assertEquals("Item 30", last.items.first().input.description)
+        assertEquals("Item 0", last.items.last().input.description)
+        assertEquals(100L, first.balance)
+        assertEquals(first.balance, last.balance)
+        val filtered = ledger.page(scope, Filters(typeId = 1), 2)
+        assertEquals(16, filtered.items.size)
+        assertEquals(2, filtered.totalPages)
+        assertEquals(1600L, filtered.balance)
+    }
+
+    @Test fun emptyFilteredResultsHaveNoNextPage() = withStore { store, _ ->
+        store.ledger.save(scope, TransactionInput("Mercado", 500, 0, 2), occurredAt = instant)
+        val page = store.ledger.page(scope, Filters(search = "inexistente"), 1)
+        assertTrue(page.items.isEmpty())
+        assertEquals(0, page.totalPages)
+        assertEquals(0L, page.balance)
+    }
+
     private fun withStore(block: (ImportStore, () -> ImportStore) -> Unit) {
         val name = "ledger-test-${UUID.randomUUID()}.db"
         var store = ImportStore(context, name)
